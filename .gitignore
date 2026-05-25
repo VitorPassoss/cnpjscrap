@@ -1,0 +1,13 @@
+node_modules/
+.next/
+dist/
+build/
+coverage/
+.env
+.env.local
+.turbo/
+tmp/
+*.log
+.DS_Store
+playwright-report/
+test-results/
