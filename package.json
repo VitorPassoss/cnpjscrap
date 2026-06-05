@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "pnpm --filter @cnpjscrap/web dev",
     "build": "pnpm -r build",
+    "build:web": "pnpm --filter @cnpjscrap/web build",
+    "start": "pnpm --filter @cnpjscrap/web start",
     "lint": "eslint .",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
@@ -16,6 +18,7 @@
     "test:e2e": "pnpm --filter @cnpjscrap/web test:e2e",
     "db:migrate": "pnpm --filter @cnpjscrap/db migrate",
     "db:seed": "pnpm --filter @cnpjscrap/db seed",
+    "scrape": "tsx scripts/scrape-casadosdados.ts",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"
   },
@@ -24,6 +27,7 @@
     "@types/node": "^20.16.10",
     "eslint": "^9.13.0",
     "prettier": "^3.3.3",
+    "tsx": "^4.19.1",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.59.4",
     "vitest": "^2.1.3"

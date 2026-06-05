@@ -1,8 +1,465 @@
-export default function Home() {
+'use client';
+
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { leadsToCsv, type Lead, type Saldo, type SearchFilters, type Situacao } from '@/lib/casadosdados';
+
+const UFS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
+const PRESETS = [50, 100, 250, 500, 1000];
+const STORAGE_KEY = 'cdd_api_key';
+
+interface Filtros {
+  termo: string;
+  uf: string;
+  municipios: string;
+  bairros: string;
+  ddd: string;
+  cnae: string;
+  naturezas: string;
+  situacao: string;
+  porte: string[];
+  matriz: '' | 'matriz' | 'filial';
+  capitalMin: string;
+  capitalMax: string;
+  mei: '' | 'so' | 'excluir';
+  simples: '' | 'optante' | 'excluir';
+  ultimosDias: string;
+  aberturaInicio: string;
+  aberturaFim: string;
+  comTelefone: boolean;
+  somenteCelular: boolean;
+  comEmail: boolean;
+  excluirEmailContab: boolean;
+  excluirVisualizadas: boolean;
+  limite: number;
+}
+
+const INICIAL: Filtros = {
+  termo: '',
+  uf: 'SP',
+  municipios: '',
+  bairros: '',
+  ddd: '',
+  cnae: '',
+  naturezas: '',
+  situacao: 'ATIVA',
+  porte: [],
+  matriz: '',
+  capitalMin: '',
+  capitalMax: '',
+  mei: '',
+  simples: '',
+  ultimosDias: '',
+  aberturaInicio: '',
+  aberturaFim: '',
+  comTelefone: true,
+  somenteCelular: true,
+  comEmail: true,
+  excluirEmailContab: true,
+  excluirVisualizadas: false,
+  limite: 100,
+};
+
+const lista = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
+
+export default function Painel() {
+  const [apiKey, setApiKey] = useState('');
+  const [keySalva, setKeySalva] = useState(false);
+  const [editandoKey, setEditandoKey] = useState(true);
+
+  const [saldo, setSaldo] = useState<Saldo | null>(null);
+  const [saldoLoading, setSaldoLoading] = useState(false);
+
+  const [f, setF] = useState<Filtros>(INICIAL);
+  const [avancado, setAvancado] = useState(false);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState('');
+
+  const set = <K extends keyof Filtros>(k: K, v: Filtros[K]) => setF((p) => ({ ...p, [k]: v }));
+
+  useEffect(() => {
+    const k = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
+    if (k) { setApiKey(k); setKeySalva(true); setEditandoKey(false); }
+  }, []);
+
+  const carregarSaldo = useCallback(async (key: string) => {
+    if (!key) return;
+    setSaldoLoading(true);
+    try {
+      const res = await fetch('/api/saldo', { headers: { 'x-api-key': key } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao consultar saldo');
+      setSaldo(data);
+    } catch (e) {
+      setSaldo(null);
+      setErro((e as Error).message);
+    } finally {
+      setSaldoLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (keySalva && apiKey) carregarSaldo(apiKey);
+  }, [keySalva, apiKey, carregarSaldo]);
+
+  const salvarKey = () => {
+    const k = apiKey.trim();
+    if (!k) return;
+    localStorage.setItem(STORAGE_KEY, k);
+    setKeySalva(true);
+    setEditandoKey(false);
+    carregarSaldo(k);
+  };
+
+  const buscar = async () => {
+    setLoading(true);
+    setErro('');
+    setLeads([]);
+    setTotal(null);
+    try {
+      const body: SearchFilters = {
+        termo: f.termo || undefined,
+        uf: f.uf ? [f.uf] : [],
+        municipios: lista(f.municipios),
+        bairros: lista(f.bairros),
+        ddd: lista(f.ddd),
+        cnaes: lista(f.cnae).map((c) => c.replace(/\D/g, '')).filter(Boolean),
+        naturezas: lista(f.naturezas),
+        situacao: f.situacao ? [f.situacao as Situacao] : ['ATIVA'],
+        porte: f.porte,
+        somenteMatriz: f.matriz === 'matriz',
+        somenteFilial: f.matriz === 'filial',
+        capitalMin: f.capitalMin ? Number(f.capitalMin) : undefined,
+        capitalMax: f.capitalMax ? Number(f.capitalMax) : undefined,
+        meiOptante: f.mei === 'so',
+        excluirMei: f.mei === 'excluir',
+        simplesOptante: f.simples === 'optante',
+        excluirSimples: f.simples === 'excluir',
+        ultimosDias: f.ultimosDias ? Number(f.ultimosDias) : undefined,
+        aberturaInicio: f.aberturaInicio || undefined,
+        aberturaFim: f.aberturaFim || undefined,
+        comTelefone: f.comTelefone || f.somenteCelular,
+        somenteCelular: f.somenteCelular,
+        comEmail: f.comEmail,
+        excluirEmailContab: f.excluirEmailContab,
+        excluirVisualizadas: f.excluirVisualizadas,
+        limite: f.limite,
+        pagina: 1,
+      };
+      const res = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha na busca');
+      setLeads(data.leads ?? []);
+      setTotal(data.total ?? 0);
+      carregarSaldo(apiKey);
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const baixarCsv = () => {
+    const csv = leadsToCsv(leads);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `leads-${f.uf || 'BR'}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const saldoTotal = saldo?.saldo_total ?? 0;
+  const semSaldo = keySalva && saldo !== null && saldoTotal <= 0;
+  const podeBuscar = keySalva && !loading && !semSaldo;
+  const comWpp = useMemo(() => leads.filter((l) => l.whatsapp).length, [leads]);
+  const comEmail = useMemo(() => leads.filter((l) => l.email).length, [leads]);
+
+  const togglePorte = (code: string) =>
+    set('porte', f.porte.includes(code) ? f.porte.filter((c) => c !== code) : [...f.porte, code]);
+
   return (
-    <main className="mx-auto max-w-3xl p-8">
-      <h1 className="text-3xl font-semibold">cnpjscrap</h1>
-      <p className="mt-2 text-zinc-600">Foundation pronto.</p>
-    </main>
+    <div className="min-h-screen bg-zinc-50">
+      <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+          <div className="flex items-center gap-2">
+            <span className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-600 text-sm font-bold text-white">CD</span>
+            <div>
+              <h1 className="text-sm font-semibold leading-tight text-zinc-900">CNPJ Scraper</h1>
+              <p className="text-xs leading-tight text-zinc-500">Casa dos Dados · leads com telefone e e-mail</p>
+            </div>
+          </div>
+          <SaldoBadge saldo={saldo} loading={saldoLoading} visivel={keySalva} />
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl space-y-5 px-6 py-6">
+        {/* Chave */}
+        <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+          {editandoKey ? (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-zinc-700">Chave da API (Casa dos Dados)</label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="cole sua api-key aqui"
+                  className="flex-1 rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" />
+                <button onClick={salvarKey} disabled={!apiKey.trim()}
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-40">
+                  Salvar e validar
+                </button>
+              </div>
+              <p className="text-xs text-zinc-500">Fica salva só no seu navegador. Pegue em{' '}
+                <a className="text-emerald-700 underline" href="https://portal.casadosdados.com.br/plataforma/api/chave" target="_blank" rel="noreferrer">portal.casadosdados.com.br</a>.
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm text-zinc-700">
+                <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+                Chave salva <span className="font-mono text-zinc-400">••••{apiKey.slice(-4)}</span>
+              </div>
+              <button onClick={() => setEditandoKey(true)} className="text-sm text-zinc-500 underline hover:text-zinc-700">trocar</button>
+            </div>
+          )}
+        </section>
+
+        {/* Filtros */}
+        <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+          <h2 className="mb-4 text-sm font-semibold text-zinc-900">Filtros</h2>
+
+          {/* texto + localização + atividade */}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            <Campo label="Buscar texto (razão / fantasia)" span2>
+              <input value={f.termo} onChange={(e) => set('termo', e.target.value)} placeholder="ex: restaurante, clínica…" className={inp} />
+            </Campo>
+            <Campo label="UF">
+              <select value={f.uf} onChange={(e) => set('uf', e.target.value)} className={inp}>
+                <option value="">Brasil (todas)</option>
+                {UFS.map((u) => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </Campo>
+            <Campo label="Situação">
+              <select value={f.situacao} onChange={(e) => set('situacao', e.target.value)} className={inp}>
+                {['ATIVA','BAIXADA','INAPTA','SUSPENSA','NULA'].map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Campo>
+            <Campo label="Município(s)">
+              <input value={f.municipios} onChange={(e) => set('municipios', e.target.value)} placeholder="ex: SAO PAULO, CAMPINAS" className={inp} />
+            </Campo>
+            <Campo label="CNAE(s)">
+              <input value={f.cnae} onChange={(e) => set('cnae', e.target.value)} placeholder="ex: 5611201, 4712100" className={inp} />
+            </Campo>
+            <Campo label="DDD(s)">
+              <input value={f.ddd} onChange={(e) => set('ddd', e.target.value)} placeholder="ex: 11, 19" className={inp} />
+            </Campo>
+            <Campo label="Abertas nos últimos (dias)">
+              <input type="number" min={0} value={f.ultimosDias} onChange={(e) => set('ultimosDias', e.target.value)} placeholder="todas" className={inp} />
+            </Campo>
+          </div>
+
+          {/* contato / qualidade */}
+          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 rounded-lg bg-zinc-50 p-3">
+            <Toggle checked={f.somenteCelular} onChange={(v) => set('somenteCelular', v)} label="Só com WhatsApp (celular)" />
+            <Toggle checked={f.comTelefone} onChange={(v) => set('comTelefone', v)} label="Com telefone" />
+            <Toggle checked={f.comEmail} onChange={(v) => set('comEmail', v)} label="Com e-mail" />
+            <Toggle checked={f.excluirEmailContab} onChange={(v) => set('excluirEmailContab', v)} label="Excluir e-mail de contabilidade" />
+            <Toggle checked={f.excluirVisualizadas} onChange={(v) => set('excluirVisualizadas', v)} label="Excluir já vistos" />
+          </div>
+
+          {/* avançado */}
+          <button onClick={() => setAvancado((v) => !v)} className="mt-4 text-xs font-medium text-emerald-700 hover:underline">
+            {avancado ? '− ocultar filtros avançados' : '+ mais filtros avançados'}
+          </button>
+          {avancado && (
+            <div className="mt-3 grid grid-cols-2 gap-4 border-t border-zinc-100 pt-4 sm:grid-cols-3 lg:grid-cols-4">
+              <Campo label="Bairro(s)">
+                <input value={f.bairros} onChange={(e) => set('bairros', e.target.value)} placeholder="ex: CENTRO" className={inp} />
+              </Campo>
+              <Campo label="Natureza jurídica (códigos)">
+                <input value={f.naturezas} onChange={(e) => set('naturezas', e.target.value)} placeholder="ex: 2062" className={inp} />
+              </Campo>
+              <Campo label="Matriz / Filial">
+                <select value={f.matriz} onChange={(e) => set('matriz', e.target.value as Filtros['matriz'])} className={inp}>
+                  <option value="">Indiferente</option>
+                  <option value="matriz">Só matriz</option>
+                  <option value="filial">Só filial</option>
+                </select>
+              </Campo>
+              <Campo label="MEI">
+                <select value={f.mei} onChange={(e) => set('mei', e.target.value as Filtros['mei'])} className={inp}>
+                  <option value="">Indiferente</option>
+                  <option value="so">Só MEI</option>
+                  <option value="excluir">Excluir MEI</option>
+                </select>
+              </Campo>
+              <Campo label="Simples Nacional">
+                <select value={f.simples} onChange={(e) => set('simples', e.target.value as Filtros['simples'])} className={inp}>
+                  <option value="">Indiferente</option>
+                  <option value="optante">Optante</option>
+                  <option value="excluir">Excluir optante</option>
+                </select>
+              </Campo>
+              <Campo label="Capital social mín. (R$)">
+                <input type="number" min={0} value={f.capitalMin} onChange={(e) => set('capitalMin', e.target.value)} placeholder="0" className={inp} />
+              </Campo>
+              <Campo label="Capital social máx. (R$)">
+                <input type="number" min={0} value={f.capitalMax} onChange={(e) => set('capitalMax', e.target.value)} placeholder="sem limite" className={inp} />
+              </Campo>
+              <Campo label="Aberta de / até">
+                <div className="flex gap-1">
+                  <input type="date" value={f.aberturaInicio} onChange={(e) => set('aberturaInicio', e.target.value)} className={inp} />
+                  <input type="date" value={f.aberturaFim} onChange={(e) => set('aberturaFim', e.target.value)} className={inp} />
+                </div>
+              </Campo>
+              <Campo label="Porte" span2>
+                <div className="flex flex-wrap gap-3 pt-1">
+                  {([['01','Micro'],['03','Pequeno'],['05','Demais']] as const).map(([code, lbl]) => (
+                    <Toggle key={code} checked={f.porte.includes(code)} onChange={() => togglePorte(code)} label={lbl} />
+                  ))}
+                </div>
+              </Campo>
+            </div>
+          )}
+
+          {/* quantidade */}
+          <div className="mt-5 border-t border-zinc-100 pt-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-xs font-medium text-zinc-600">Quantidade:</span>
+              {PRESETS.map((p) => (
+                <button key={p} onClick={() => set('limite', p)}
+                  className={`rounded-md px-3 py-1 text-sm font-medium transition ${f.limite === p ? 'bg-emerald-600 text-white' : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200'}`}>
+                  {p}
+                </button>
+              ))}
+              <input type="number" min={1} max={1000} value={f.limite}
+                onChange={(e) => set('limite', Math.max(1, Math.min(Number(e.target.value) || 1, 1000)))}
+                className="w-24 rounded-md border border-zinc-300 px-2 py-1 text-sm outline-none focus:border-emerald-500" />
+              <span className="text-xs text-zinc-400">máx. 1000 por busca</span>
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <button onClick={buscar} disabled={!podeBuscar}
+              className="rounded-lg bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40">
+              {loading ? 'Buscando…' : `Buscar ${f.limite} leads`}
+            </button>
+            {!keySalva && <span className="text-sm text-amber-600">Informe a chave da API primeiro.</span>}
+            {semSaldo && <span className="text-sm text-red-600">Saldo zerado — recarregue no portal.</span>}
+          </div>
+        </section>
+
+        {erro && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{erro}</div>}
+
+        {(leads.length > 0 || total !== null) && (
+          <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-5 py-3">
+              <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600">
+                <span className="font-semibold text-zinc-900">{leads.length}</span> leads
+                {total !== null && <span className="text-zinc-400">· {total.toLocaleString('pt-BR')} no filtro</span>}
+                <Badge>{comWpp} c/ WhatsApp</Badge>
+                <Badge>{comEmail} c/ e-mail</Badge>
+              </div>
+              <button onClick={baixarCsv} disabled={!leads.length}
+                className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
+                Baixar CSV
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-100 text-left text-xs uppercase tracking-wide text-zinc-400">
+                    <th className="px-5 py-2 font-medium">Empresa</th>
+                    <th className="px-3 py-2 font-medium">CNPJ</th>
+                    <th className="px-3 py-2 font-medium">Local</th>
+                    <th className="px-3 py-2 font-medium">Telefone</th>
+                    <th className="px-3 py-2 font-medium">WhatsApp</th>
+                    <th className="px-3 py-2 font-medium">E-mail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leads.map((l) => (
+                    <tr key={l.cnpj} className="border-b border-zinc-50 align-top hover:bg-zinc-50/60">
+                      <td className="px-5 py-2.5">
+                        <div className="font-medium text-zinc-900">{l.razaoSocial || l.nomeFantasia || '—'}</div>
+                        <div className="text-xs text-zinc-500">
+                          {[l.nomeFantasia && l.nomeFantasia !== l.razaoSocial ? l.nomeFantasia : '', l.porte, l.dataAbertura && `aberta ${l.dataAbertura}`].filter(Boolean).join(' · ')}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 font-mono text-xs text-zinc-600">{l.cnpjFormatado}</td>
+                      <td className="px-3 py-2.5 text-zinc-600">{l.municipio ? `${l.municipio}/${l.uf}` : l.uf || '—'}</td>
+                      <td className="px-3 py-2.5 text-xs text-zinc-700">
+                        {l.telefones.length ? (
+                          <span>{l.telefones[0]}{l.telefones.length > 1 && <span className="text-zinc-400"> +{l.telefones.length - 1}</span>}</span>
+                        ) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {l.whatsapp ? (
+                          <a href={l.whatsappLink} target="_blank" rel="noreferrer"
+                            className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">
+                            ● abrir
+                          </a>
+                        ) : <span className="text-xs text-zinc-400">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-zinc-700">
+                        {l.email ? (
+                          <span>{l.email}{l.emails.length > 1 && <span className="text-zinc-400"> +{l.emails.length - 1}</span>}</span>
+                        ) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {loading && <div className="px-5 py-4 text-sm text-zinc-500">Carregando…</div>}
+            {!loading && leads.length === 0 && total === 0 && (
+              <div className="px-5 py-8 text-center text-sm text-zinc-500">Nenhum lead pra esses filtros. Afrouxe os filtros e tente de novo.</div>
+            )}
+          </section>
+        )}
+      </main>
+    </div>
+  );
+}
+
+const inp = 'w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100';
+
+function Badge({ children }: { children: ReactNode }) {
+  return <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">{children}</span>;
+}
+
+function SaldoBadge({ saldo, loading, visivel }: { saldo: Saldo | null; loading: boolean; visivel: boolean }) {
+  if (!visivel) return null;
+  const total = saldo?.saldo_total ?? 0;
+  const cor = total > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700';
+  return (
+    <div className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium ${cor}`}>
+      <span className="text-xs opacity-70">saldo</span>
+      <span className="font-semibold">{loading ? '…' : total.toLocaleString('pt-BR')}</span>
+    </div>
+  );
+}
+
+function Campo({ label, span2, children }: { label: string; span2?: boolean; children: ReactNode }) {
+  return (
+    <label className={`block ${span2 ? 'col-span-2' : ''}`}>
+      <span className="mb-1 block text-xs font-medium text-zinc-600">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button type="button" onClick={() => onChange(!checked)} className="flex items-center gap-2 text-sm text-zinc-700">
+      <span className={`relative h-5 w-9 rounded-full transition ${checked ? 'bg-emerald-600' : 'bg-zinc-300'}`}>
+        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition ${checked ? 'left-4' : 'left-0.5'}`} />
+      </span>
+      {label}
+    </button>
   );
 }
