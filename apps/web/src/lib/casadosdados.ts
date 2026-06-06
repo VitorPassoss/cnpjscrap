@@ -213,7 +213,7 @@ function coletarTelefones(raw: Record<string, unknown>): FoneObj[] {
 
   for (const o of fontes) {
     // 1) arrays de telefones (objetos ou strings)
-    for (const arrKey of ['telefones', 'telefone', 'contatos', 'telefones_completos']) {
+    for (const arrKey of ['contato_telefonico', 'telefones', 'telefone', 'contatos', 'telefones_completos']) {
       const cand = o[arrKey];
       if (!Array.isArray(cand)) continue;
       for (const t of cand) {
@@ -254,7 +254,7 @@ function coletarEmails(raw: Record<string, unknown>): string[] {
     }
   };
   for (const o of [raw, asObj(raw.estabelecimento), asObj(raw.contato)]) {
-    for (const k of ['emails', 'email', 'correio_eletronico', 'email_1', 'email1']) {
+    for (const k of ['contato_email', 'emails', 'email', 'correio_eletronico', 'email_1', 'email1']) {
       const v = o[k];
       if (Array.isArray(v)) v.forEach(add);
       else add(v);
@@ -375,22 +375,6 @@ export async function searchOficial(
   const filtrados = querSoNumero && algumComFone ? leads.filter((l) => l.telefones.length > 0) : leads;
 
   return { total: total || filtrados.length, leads: filtrados.slice(0, alvo) };
-}
-
-/** DEBUG: devolve o primeiro CNPJ cru do "completo" (pra inspecionar os campos). */
-export async function debugRawFirst(
-  apiKey: string,
-  filters: SearchFilters,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  const res = await fetch(`${API}/v5/cnpj/pesquisa?tipo_resultado=completo`, {
-    method: 'POST',
-    headers: authHeaders(apiKey),
-    body: JSON.stringify(buildBody({ ...filters, limite: 1, pagina: 1 })),
-    signal,
-  });
-  const data = (await handle(res)) as { cnpjs?: unknown[] };
-  return data.cnpjs?.[0] ?? null;
 }
 
 // ───────────────────── saída CSV (pt-BR / Excel) ─────────────────────
