@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { leadsToCsv, type Lead, type Saldo, type SearchFilters, type Situacao } from '@/lib/casadosdados';
-import { DEFAULT_TEMPLATE, leadLinkUrl, leadVars } from '@/lib/leadLink';
+import {
+  applyText,
+  DEFAULT_DISPARO_MSG,
+  DEFAULT_TEMPLATE,
+  disparoCsv,
+  leadLinkUrl,
+  leadVars,
+} from '@/lib/leadLink';
 import TemplateEditor from './_components/TemplateEditor';
 
 const UFS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
@@ -62,6 +69,16 @@ const INICIAL: Filtros = {
 
 const lista = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
+function baixarArquivo(conteudo: string, nome: string) {
+  const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = nome;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function Painel() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [hasKey, setHasKey] = useState(false);
@@ -84,6 +101,10 @@ export default function Painel() {
   const [tplStatus, setTplStatus] = useState<'' | 'salvando' | 'salvo' | 'erro'>('');
   const [copiado, setCopiado] = useState('');
   const [gerando, setGerando] = useState('');
+
+  const [links, setLinks] = useState<Record<string, string>>({}); // cnpj → url curta gerada
+  const [disparoMsg, setDisparoMsg] = useState(DEFAULT_DISPARO_MSG);
+  const [gerandoTodos, setGerandoTodos] = useState(false);
 
   const set = <K extends keyof Filtros>(k: K, v: Filtros[K]) => setF((p) => ({ ...p, [k]: v }));
 
@@ -113,6 +134,7 @@ export default function Painel() {
         setKeyLast4(data.keyLast4 || '');
         setDbReady(data.dbReady !== false);
         if (typeof data.template === 'string' && data.template) setTemplate(data.template);
+        if (typeof data.disparoMsg === 'string' && data.disparoMsg) setDisparoMsg(data.disparoMsg);
         if (data.hasKey) {
           setEditandoKey(false);
           carregarSaldo();
@@ -144,9 +166,25 @@ export default function Painel() {
     }, 700);
   }, []);
 
-  // Gera o link curto (/l/<code>) via banco; cai no link longo se o banco falhar.
+  // Salva a mensagem de disparo no banco (debounce 700ms).
+  const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const salvarDisparoMsg = useCallback((m: string) => {
+    setDisparoMsg(m);
+    if (msgTimer.current) clearTimeout(msgTimer.current);
+    msgTimer.current = setTimeout(() => {
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disparoMsg: m }),
+      }).catch(() => {});
+    }, 700);
+  }, []);
+
+  // Gera o link curto (/l/<code>) via banco; usa cache e cai no link longo se falhar.
   const gerarLinkCurto = useCallback(
     async (l: Lead): Promise<string> => {
+      const cached = links[l.cnpj];
+      if (cached) return cached;
       try {
         const res = await fetch('/api/links', {
           method: 'POST',
@@ -154,14 +192,61 @@ export default function Painel() {
           body: JSON.stringify({ vars: leadVars(l), template }),
         });
         const data = await res.json();
-        if (res.ok && data.code) return `${window.location.origin}/l/${data.code}`;
+        if (res.ok && data.code) {
+          const url = `${window.location.origin}/l/${data.code}`;
+          setLinks((m) => ({ ...m, [l.cnpj]: url }));
+          return url;
+        }
       } catch {
         // sem banco → link longo autossuficiente
       }
       return leadLinkUrl(window.location.origin, leadVars(l), template);
     },
-    [template],
+    [template, links],
   );
+
+  // Gera (em lote) o link curto de TODOS os leads e devolve o mapa cnpj → url.
+  const gerarLinksLote = useCallback(async (): Promise<Record<string, string>> => {
+    const origin = window.location.origin;
+    let codes: Record<string, string> = {};
+    try {
+      const res = await fetch('/api/links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch: leads.map((l) => ({ cnpj: l.cnpj, vars: leadVars(l) })), template }),
+      });
+      const data = await res.json();
+      if (res.ok && data.links) codes = data.links;
+    } catch {
+      // sem banco → links longos abaixo
+    }
+    const novos: Record<string, string> = {};
+    for (const l of leads) {
+      const code = codes[l.cnpj];
+      novos[l.cnpj] = code ? `${origin}/l/${code}` : leadLinkUrl(origin, leadVars(l), template);
+    }
+    setLinks((m) => ({ ...m, ...novos }));
+    return novos;
+  }, [leads, template]);
+
+  // Gera os links e baixa o CSV de disparo (contato + link + mensagem montada).
+  const gerarDisparo = useCallback(async () => {
+    if (!leads.length) return;
+    setGerandoTodos(true);
+    setErro('');
+    try {
+      const urls = await gerarLinksLote();
+      const items = leads.map((l) => {
+        const link = urls[l.cnpj] ?? '';
+        return { lead: l, link, mensagem: applyText(disparoMsg, { ...leadVars(l), link }) };
+      });
+      baixarArquivo(disparoCsv(items), `disparo-${f.uf || 'BR'}-${new Date().toISOString().slice(0, 10)}.csv`);
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setGerandoTodos(false);
+    }
+  }, [leads, disparoMsg, f.uf, gerarLinksLote]);
 
   const copiarLink = useCallback(
     async (l: Lead) => {
@@ -222,6 +307,7 @@ export default function Painel() {
     setErro('');
     setLeads([]);
     setTotal(null);
+    setLinks({});
     try {
       const body: SearchFilters = {
         termo: f.termo || undefined,
@@ -269,15 +355,14 @@ export default function Painel() {
     }
   };
 
-  const baixarCsv = () => {
-    const csv = leadsToCsv(leads);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `leads-${f.uf || 'BR'}-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const baixarCsv = async () => {
+    setGerandoTodos(true);
+    try {
+      const urls = await gerarLinksLote(); // CSV já sai com a coluna pagina_link
+      baixarArquivo(leadsToCsv(leads, urls), `leads-${f.uf || 'BR'}-${new Date().toISOString().slice(0, 10)}.csv`);
+    } finally {
+      setGerandoTodos(false);
+    }
   };
 
   const saldoTotal = saldo?.saldo_total ?? 0;
@@ -480,6 +565,41 @@ export default function Painel() {
           dbReady={dbReady}
         />
 
+        {leads.length > 0 && (
+          <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-semibold text-zinc-900">Disparo em massa</h2>
+                <p className="text-xs text-zinc-500">
+                  Gera o link curto de cada lead e baixa um CSV (telefone, WhatsApp, link e a mensagem já montada) pronto pra importar na sua ferramenta de disparo.
+                </p>
+              </div>
+              <button
+                onClick={gerarDisparo}
+                disabled={gerandoTodos || !leads.length}
+                className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
+              >
+                {gerandoTodos ? 'Gerando…' : `Gerar links + CSV de disparo (${leads.length})`}
+              </button>
+            </div>
+            <div className="mt-3">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-xs font-medium text-zinc-600">Mensagem do disparo</span>
+                <span className="font-mono text-[11px] text-zinc-400">use {'{{link}}'} e variáveis do lead</span>
+              </div>
+              <textarea
+                value={disparoMsg}
+                onChange={(e) => salvarDisparoMsg(e.target.value)}
+                rows={3}
+                className="w-full resize-y rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+              />
+              {Object.keys(links).length > 0 && (
+                <p className="mt-1 text-xs text-emerald-700">{Object.keys(links).length} link(s) curto(s) já gerados.</p>
+              )}
+            </div>
+          </section>
+        )}
+
         {(leads.length > 0 || total !== null) && (
           <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-5 py-3">
@@ -489,9 +609,9 @@ export default function Painel() {
                 <Badge>{comWpp} c/ WhatsApp</Badge>
                 <Badge>{comEmail} c/ e-mail</Badge>
               </div>
-              <button onClick={baixarCsv} disabled={!leads.length}
+              <button onClick={baixarCsv} disabled={!leads.length || gerandoTodos}
                 className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
-                Baixar CSV
+                {gerandoTodos ? 'Gerando…' : 'Baixar CSV (com link)'}
               </button>
             </div>
             <div className="overflow-x-auto">

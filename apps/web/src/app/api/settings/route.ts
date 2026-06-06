@@ -9,6 +9,7 @@ function publicShape(s: Settings, dbReady: boolean) {
     hasKey: !!s.apiKey,
     keyLast4: s.apiKey.slice(-4),
     template: s.template,
+    disparoMsg: s.disparoMsg,
     dbReady,
   };
 }
@@ -16,7 +17,7 @@ function publicShape(s: Settings, dbReady: boolean) {
 export async function GET() {
   if (!dbConfigured()) {
     const envKey = process.env.CASADOSDADOS_API_KEY || '';
-    return Response.json(publicShape({ apiKey: envKey, template: '' }, false));
+    return Response.json(publicShape({ apiKey: envKey, template: '', disparoMsg: '' }, false));
   }
   try {
     const s = await getSettings();
@@ -30,7 +31,7 @@ export async function POST(req: Request) {
   if (!dbConfigured()) {
     return Response.json({ error: 'Banco não configurado — defina DATABASE_URL.' }, { status: 503 });
   }
-  let body: { apiKey?: unknown; template?: unknown };
+  let body: { apiKey?: unknown; template?: unknown; disparoMsg?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -40,6 +41,7 @@ export async function POST(req: Request) {
   const patch: Partial<Settings> = {};
   if (typeof body.apiKey === 'string' && body.apiKey.trim()) patch.apiKey = body.apiKey.trim();
   if (typeof body.template === 'string') patch.template = body.template;
+  if (typeof body.disparoMsg === 'string') patch.disparoMsg = body.disparoMsg;
 
   if (!Object.keys(patch).length) {
     return Response.json({ error: 'Nada para salvar.' }, { status: 400 });

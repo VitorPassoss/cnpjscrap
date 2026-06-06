@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Link público por lead — 100% sem backend.
  *
  * O link carrega os próprios dados: { v: variáveis do lead, t: template HTML }
@@ -150,20 +150,42 @@ export function applyTemplate(template: string, vars: Record<string, string>): s
   );
 }
 
-/** Embrulha o HTML do usuário num documento completo com Tailwind via CDN. */
-export function buildDoc(bodyHtml: string): string {
+/** Igual ao applyTemplate, mas sem escapar HTML — pra texto puro (mensagem de disparo). */
+export function applyText(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{\s*([\w]+)\s*\}\}/g, (_m, k: string) => (k in vars ? vars[k] ?? '' : ''));
+}
+
+/** Serializa pra dentro de uma <script> sem permitir quebra de tag/contexto. */
+function safeJson(obj: unknown): string {
+  return JSON.stringify(obj)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
+/**
+ * Embrulha o HTML do usuário num documento completo com Tailwind via CDN.
+ * Quando `vars` é passado, expõe os dados do lead pro JS do template em
+ * `window.LEAD` (ex.: `LEAD.whatsapp`, `LEAD.razaoSocial`) — assim dá pra
+ * fazer chamadas de API, abrir modais, disparar eventos etc. com os dados.
+ */
+export function buildDoc(bodyHtml: string, vars?: Record<string, string>, css?: string): string {
+  const data = vars ? `<script>window.LEAD=${safeJson(vars)};window.lead=window.LEAD;</script>` : '';
+  // css pré-compilado (rápido) quando disponível; senão Tailwind via CDN (preview/fallback).
+  const styles = css ? `<style>${css}</style>` : '<script src="https://cdn.tailwindcss.com"></script>';
   return (
     '<!doctype html><html lang="pt-BR"><head>' +
     '<meta charset="utf-8"/>' +
     '<meta name="viewport" content="width=device-width, initial-scale=1"/>' +
-    '<script src="https://cdn.tailwindcss.com"></script>' +
+    styles +
+    data +
     `</head><body>${bodyHtml}</body></html>`
   );
 }
 
-/** Atalho: aplica as variáveis e devolve o documento pronto pro iframe srcDoc. */
-export function renderTemplate(template: string, vars: Record<string, string>): string {
-  return buildDoc(applyTemplate(template, vars));
+/** Atalho: aplica as variáveis e devolve o documento HTML completo do lead. */
+export function renderTemplate(template: string, vars: Record<string, string>, css?: string): string {
+  return buildDoc(applyTemplate(template, vars), vars, css);
 }
 
 // ───────────────────────── encode / decode da URL ─────────────────────────
@@ -201,6 +223,23 @@ export function decodeLeadLink(d: string): LeadLinkPayload | null {
 /** Monta a URL pública completa para um lead. */
 export function leadLinkUrl(origin: string, vars: Record<string, string>, template: string): string {
   return `${origin}/lead?d=${encodeLeadLink(vars, template)}`;
+}
+
+// ───────────────────────── disparo em massa ─────────────────────────
+
+export const DEFAULT_DISPARO_MSG =
+  'Olá! Aqui é da nossa equipe 👋 Separei uma proposta pra {{nomeFantasia}} ({{cidade}}/{{uf}}). Dá uma olhada: {{link}}';
+
+/** CSV pronto pra disparo: contato + link + mensagem já preenchida. */
+export function disparoCsv(items: { lead: Lead; link: string; mensagem: string }[]): string {
+  const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const cols = ['razao_social', 'nome_fantasia', 'telefone', 'whatsapp', 'whatsapp_link', 'pagina_link', 'mensagem'];
+  const rows = items.map(({ lead, link, mensagem }) =>
+    [lead.razaoSocial, lead.nomeFantasia, lead.telefones[0] ?? '', lead.whatsapp, lead.whatsappLink, link, mensagem]
+      .map(esc)
+      .join(';'),
+  );
+  return '﻿' + [cols.map(esc).join(';'), ...rows].join('\r\n') + '\r\n';
 }
 
 // ───────────────────────── template padrão ─────────────────────────

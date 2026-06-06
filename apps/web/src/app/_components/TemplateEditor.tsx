@@ -33,7 +33,8 @@ export default function TemplateEditor({ template, onChange, onReset, sampleVars
         <div>
           <h2 className="text-sm font-semibold text-zinc-900">Modelo da página pública</h2>
           <p className="text-xs text-zinc-500">
-            HTML + Tailwind com {'{{'}variáveis{'}}'} — vira o link de cada lead
+            HTML + Tailwind + JS com {'{{'}variáveis{'}}'} — vira o link de cada lead.{' '}
+            No {'<script>'} use <span className="font-mono">window.LEAD.razaoSocial</span> etc.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -94,7 +95,7 @@ export default function TemplateEditor({ template, onChange, onReset, sampleVars
             <iframe
               title="preview"
               srcDoc={doc}
-              sandbox="allow-scripts allow-popups"
+              sandbox="allow-scripts allow-modals allow-popups allow-forms"
               className="h-80 w-full rounded-lg border border-zinc-200 bg-white"
             />
           </div>

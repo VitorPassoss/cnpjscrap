@@ -11,6 +11,7 @@ import { Pool } from 'pg';
 export interface Settings {
   apiKey: string;
   template: string;
+  disparoMsg: string;
 }
 
 export function dbConfigured(): boolean {
@@ -47,6 +48,7 @@ function ensureTable(): Promise<void> {
            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
          );
          INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+         ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS disparo_msg TEXT NOT NULL DEFAULT '';
          CREATE TABLE IF NOT EXISTS lead_links (
            code       TEXT PRIMARY KEY,
            payload    JSONB NOT NULL,
@@ -64,11 +66,15 @@ function ensureTable(): Promise<void> {
 
 export async function getSettings(): Promise<Settings> {
   await ensureTable();
-  const r = await getPool().query<{ api_key: string; template: string }>(
-    'SELECT api_key, template FROM app_settings WHERE id = 1',
+  const r = await getPool().query<{ api_key: string; template: string; disparo_msg: string }>(
+    'SELECT api_key, template, disparo_msg FROM app_settings WHERE id = 1',
   );
   const row = r.rows[0];
-  return { apiKey: row?.api_key ?? '', template: row?.template ?? '' };
+  return {
+    apiKey: row?.api_key ?? '',
+    template: row?.template ?? '',
+    disparoMsg: row?.disparo_msg ?? '',
+  };
 }
 
 /** Atualiza só os campos enviados (undefined = não mexe). */
@@ -76,11 +82,12 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
   await ensureTable();
   await getPool().query(
     `UPDATE app_settings
-        SET api_key  = COALESCE($1, api_key),
-            template = COALESCE($2, template),
-            updated_at = now()
+        SET api_key     = COALESCE($1, api_key),
+            template    = COALESCE($2, template),
+            disparo_msg = COALESCE($3, disparo_msg),
+            updated_at  = now()
       WHERE id = 1`,
-    [patch.apiKey ?? null, patch.template ?? null],
+    [patch.apiKey ?? null, patch.template ?? null, patch.disparoMsg ?? null],
   );
   return getSettings();
 }
@@ -95,6 +102,22 @@ export async function createLeadLink(code: string, payload: unknown): Promise<bo
     [code, JSON.stringify(payload)],
   );
   return (r.rowCount ?? 0) > 0;
+}
+
+/** Insere vários links de uma vez (um INSERT só). */
+export async function createLeadLinksBatch(rows: { code: string; payload: unknown }[]): Promise<void> {
+  if (!rows.length) return;
+  await ensureTable();
+  const values: string[] = [];
+  const params: unknown[] = [];
+  rows.forEach((r, i) => {
+    values.push(`($${i * 2 + 1}, $${i * 2 + 2})`);
+    params.push(r.code, JSON.stringify(r.payload));
+  });
+  await getPool().query(
+    `INSERT INTO lead_links (code, payload) VALUES ${values.join(', ')} ON CONFLICT (code) DO NOTHING`,
+    params,
+  );
 }
 
 /** Lê o payload de um código curto. */

@@ -324,14 +324,18 @@ export const CSV_COLS: { key: keyof Lead; label: string }[] = [
   { key: 'fonte', label: 'fonte' },
 ];
 
-export function leadsToCsv(leads: Lead[]): string {
+export function leadsToCsv(leads: Lead[], links?: Record<string, string>): string {
   const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const head = CSV_COLS.map((c) => esc(c.label)).join(';');
-  const rows = leads.map((l) =>
-    CSV_COLS.map((c) => {
+  const comLink = !!links;
+  const headCols = comLink ? [...CSV_COLS.map((c) => c.label), 'pagina_link'] : CSV_COLS.map((c) => c.label);
+  const head = headCols.map(esc).join(';');
+  const rows = leads.map((l) => {
+    const cols = CSV_COLS.map((c) => {
       const v = l[c.key];
       return esc(Array.isArray(v) ? v.join(' | ') : v);
-    }).join(';'),
-  );
+    });
+    if (comLink) cols.push(esc(links[l.cnpj] ?? ''));
+    return cols.join(';');
+  });
   return '﻿' + [head, ...rows].join('\r\n') + '\r\n';
 }
