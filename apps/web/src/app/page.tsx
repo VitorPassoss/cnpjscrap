@@ -13,7 +13,7 @@ import {
 import TemplateEditor from './_components/TemplateEditor';
 
 const UFS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
-const PRESETS = [50, 100, 250, 500, 1000];
+const PRESETS = [100, 500, 1000, 3000, 6000];
 
 interface Filtros {
   termo: string;
@@ -537,10 +537,10 @@ export default function Painel() {
                   {p}
                 </button>
               ))}
-              <input type="number" min={1} max={1000} value={f.limite}
-                onChange={(e) => set('limite', Math.max(1, Math.min(Number(e.target.value) || 1, 1000)))}
+              <input type="number" min={1} max={6000} value={f.limite}
+                onChange={(e) => set('limite', Math.max(1, Math.min(Number(e.target.value) || 1, 6000)))}
                 className="w-24 rounded-md border border-zinc-300 px-2 py-1 text-sm outline-none focus:border-emerald-500" />
-              <span className="text-xs text-zinc-400">máx. 1000 por busca</span>
+              <span className="text-xs text-zinc-400">máx. 6000 por busca · acima de 1000 pagina e consome mais saldo</span>
             </div>
           </div>
 

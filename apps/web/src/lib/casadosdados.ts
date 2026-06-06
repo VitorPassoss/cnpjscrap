@@ -288,21 +288,45 @@ function mapLead(raw: Record<string, unknown>): Lead {
   };
 }
 
-/** POST /v5/cnpj/pesquisa?tipo_resultado=completo */
+/** Máximo de resultados por busca (paginando a API, que devolve até 1000/página). */
+export const MAX_RESULTADOS = 6000;
+const POR_PAGINA = 1000;
+
+/**
+ * POST /v5/cnpj/pesquisa?tipo_resultado=completo
+ * A API devolve no máximo 1000 por página; pra alvos maiores (até 6000) a gente
+ * pagina e concatena. Cada página consome saldo da conta.
+ */
 export async function searchOficial(
   apiKey: string,
   filters: SearchFilters,
   signal?: AbortSignal,
 ): Promise<{ total: number; leads: Lead[] }> {
-  const res = await fetch(`${API}/v5/cnpj/pesquisa?tipo_resultado=completo`, {
-    method: 'POST',
-    headers: authHeaders(apiKey),
-    body: JSON.stringify(buildBody(filters)),
-    signal,
-  });
-  const data = (await handle(res)) as { total: number; cnpjs: Record<string, unknown>[] };
-  const leads = (data.cnpjs ?? []).map(mapLead);
-  return { total: data.total ?? leads.length, leads };
+  const alvo = Math.max(1, Math.min(filters.limite ?? 50, MAX_RESULTADOS));
+  const leads: Lead[] = [];
+  let total = 0;
+  let pagina = Math.max(1, filters.pagina ?? 1);
+
+  while (leads.length < alvo) {
+    const restam = alvo - leads.length;
+    const limitePagina = Math.min(restam, POR_PAGINA);
+    const res = await fetch(`${API}/v5/cnpj/pesquisa?tipo_resultado=completo`, {
+      method: 'POST',
+      headers: authHeaders(apiKey),
+      body: JSON.stringify(buildBody({ ...filters, limite: limitePagina, pagina })),
+      signal,
+    });
+    const data = (await handle(res)) as { total: number; cnpjs: Record<string, unknown>[] };
+    total = data.total ?? total;
+    const pageLeads = (data.cnpjs ?? []).map(mapLead);
+    leads.push(...pageLeads);
+
+    // sem mais resultados nesta página → chegou ao fim do filtro
+    if (pageLeads.length < limitePagina) break;
+    pagina += 1;
+  }
+
+  return { total: total || leads.length, leads: leads.slice(0, alvo) };
 }
 
 // ───────────────────── saída CSV (pt-BR / Excel) ─────────────────────
