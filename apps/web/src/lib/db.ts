@@ -46,7 +46,12 @@ function ensureTable(): Promise<void> {
            template   TEXT NOT NULL DEFAULT '',
            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
          );
-         INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;`,
+         INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+         CREATE TABLE IF NOT EXISTS lead_links (
+           code       TEXT PRIMARY KEY,
+           payload    JSONB NOT NULL,
+           created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+         );`,
       )
       .then(() => undefined)
       .catch((e) => {
@@ -78,4 +83,23 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
     [patch.apiKey ?? null, patch.template ?? null],
   );
   return getSettings();
+}
+
+// ───────────────────── encurtador de link de lead ─────────────────────
+
+/** Insere um payload sob o `code` (no-op se o código já existir). */
+export async function createLeadLink(code: string, payload: unknown): Promise<boolean> {
+  await ensureTable();
+  const r = await getPool().query(
+    'INSERT INTO lead_links (code, payload) VALUES ($1, $2) ON CONFLICT (code) DO NOTHING',
+    [code, JSON.stringify(payload)],
+  );
+  return (r.rowCount ?? 0) > 0;
+}
+
+/** Lê o payload de um código curto. */
+export async function getLeadLink<T = unknown>(code: string): Promise<T | null> {
+  await ensureTable();
+  const r = await getPool().query<{ payload: T }>('SELECT payload FROM lead_links WHERE code = $1', [code]);
+  return r.rows[0]?.payload ?? null;
 }

@@ -83,6 +83,7 @@ export default function Painel() {
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
   const [tplStatus, setTplStatus] = useState<'' | 'salvando' | 'salvo' | 'erro'>('');
   const [copiado, setCopiado] = useState('');
+  const [gerando, setGerando] = useState('');
 
   const set = <K extends keyof Filtros>(k: K, v: Filtros[K]) => setF((p) => ({ ...p, [k]: v }));
 
@@ -143,9 +144,30 @@ export default function Painel() {
     }, 700);
   }, []);
 
+  // Gera o link curto (/l/<code>) via banco; cai no link longo se o banco falhar.
+  const gerarLinkCurto = useCallback(
+    async (l: Lead): Promise<string> => {
+      try {
+        const res = await fetch('/api/links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vars: leadVars(l), template }),
+        });
+        const data = await res.json();
+        if (res.ok && data.code) return `${window.location.origin}/l/${data.code}`;
+      } catch {
+        // sem banco → link longo autossuficiente
+      }
+      return leadLinkUrl(window.location.origin, leadVars(l), template);
+    },
+    [template],
+  );
+
   const copiarLink = useCallback(
     async (l: Lead) => {
-      const url = leadLinkUrl(window.location.origin, leadVars(l), template);
+      setGerando(l.cnpj);
+      const url = await gerarLinkCurto(l);
+      setGerando((g) => (g === l.cnpj ? '' : g));
       try {
         await navigator.clipboard.writeText(url);
       } catch {
@@ -154,15 +176,20 @@ export default function Painel() {
       setCopiado(l.cnpj);
       setTimeout(() => setCopiado((c) => (c === l.cnpj ? '' : c)), 1500);
     },
-    [template],
+    [gerarLinkCurto],
   );
 
   const abrirLink = useCallback(
     (l: Lead) => {
-      const url = leadLinkUrl(window.location.origin, leadVars(l), template);
-      window.open(url, '_blank', 'noopener');
+      const w = window.open('about:blank', '_blank'); // abre já pra não cair em bloqueio de popup
+      setGerando(l.cnpj);
+      gerarLinkCurto(l).then((url) => {
+        setGerando((g) => (g === l.cnpj ? '' : g));
+        if (w) w.location.href = url;
+        else window.open(url, '_blank', 'noopener');
+      });
     },
-    [template],
+    [gerarLinkCurto],
   );
 
   const salvarKey = async () => {
@@ -511,12 +538,12 @@ export default function Painel() {
                       </td>
                       <td className="px-3 py-2.5">
                         <div className="flex items-center gap-1">
-                          <button onClick={() => copiarLink(l)}
-                            className="rounded-md bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-200">
-                            {copiado === l.cnpj ? 'copiado!' : 'copiar link'}
+                          <button onClick={() => copiarLink(l)} disabled={gerando === l.cnpj}
+                            className="rounded-md bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-50">
+                            {gerando === l.cnpj ? 'gerando…' : copiado === l.cnpj ? 'copiado!' : 'copiar link'}
                           </button>
-                          <button onClick={() => abrirLink(l)} title="abrir página"
-                            className="rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-50">
+                          <button onClick={() => abrirLink(l)} disabled={gerando === l.cnpj} title="abrir página"
+                            className="rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-50 disabled:opacity-50">
                             abrir
                           </button>
                         </div>
