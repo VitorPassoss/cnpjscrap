@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { leadsToCsv, type Lead, type Saldo, type SearchFilters, type Situacao } from '@/lib/casadosdados';
+import { DEFAULT_TEMPLATE, leadLinkUrl, leadVars } from '@/lib/leadLink';
+import TemplateEditor from './_components/TemplateEditor';
 
 const UFS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 const PRESETS = [50, 100, 250, 500, 1000];
-const STORAGE_KEY = 'cdd_api_key';
 
 interface Filtros {
   termo: string;
@@ -62,9 +63,12 @@ const INICIAL: Filtros = {
 const lista = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
 export default function Painel() {
-  const [apiKey, setApiKey] = useState('');
-  const [keySalva, setKeySalva] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [hasKey, setHasKey] = useState(false);
+  const [keyLast4, setKeyLast4] = useState('');
   const [editandoKey, setEditandoKey] = useState(true);
+  const [salvandoKey, setSalvandoKey] = useState(false);
+  const [dbReady, setDbReady] = useState(true);
 
   const [saldo, setSaldo] = useState<Saldo | null>(null);
   const [saldoLoading, setSaldoLoading] = useState(false);
@@ -76,18 +80,16 @@ export default function Painel() {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState('');
 
+  const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [tplStatus, setTplStatus] = useState<'' | 'salvando' | 'salvo' | 'erro'>('');
+  const [copiado, setCopiado] = useState('');
+
   const set = <K extends keyof Filtros>(k: K, v: Filtros[K]) => setF((p) => ({ ...p, [k]: v }));
 
-  useEffect(() => {
-    const k = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
-    if (k) { setApiKey(k); setKeySalva(true); setEditandoKey(false); }
-  }, []);
-
-  const carregarSaldo = useCallback(async (key: string) => {
-    if (!key) return;
+  const carregarSaldo = useCallback(async () => {
     setSaldoLoading(true);
     try {
-      const res = await fetch('/api/saldo', { headers: { 'x-api-key': key } });
+      const res = await fetch('/api/saldo');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha ao consultar saldo');
       setSaldo(data);
@@ -99,17 +101,93 @@ export default function Painel() {
     }
   }, []);
 
+  // Carrega configuração (chave + template) do banco ao abrir.
   useEffect(() => {
-    if (keySalva && apiKey) carregarSaldo(apiKey);
-  }, [keySalva, apiKey, carregarSaldo]);
+    (async () => {
+      try {
+        const res = await fetch('/api/settings');
+        const data = await res.json();
+        if (!res.ok) return;
+        setHasKey(!!data.hasKey);
+        setKeyLast4(data.keyLast4 || '');
+        setDbReady(data.dbReady !== false);
+        if (typeof data.template === 'string' && data.template) setTemplate(data.template);
+        if (data.hasKey) {
+          setEditandoKey(false);
+          carregarSaldo();
+        }
+      } catch {
+        // offline / sem servidor — segue com defaults
+      }
+    })();
+  }, [carregarSaldo]);
 
-  const salvarKey = () => {
-    const k = apiKey.trim();
+  // Salva o template no banco com debounce (700ms) e mostra o status.
+  const tplTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const salvarTemplate = useCallback((t: string) => {
+    setTemplate(t);
+    setTplStatus('salvando');
+    if (tplTimer.current) clearTimeout(tplTimer.current);
+    tplTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ template: t }),
+        });
+        if (!res.ok) throw new Error();
+        setTplStatus('salvo');
+      } catch {
+        setTplStatus('erro');
+      }
+    }, 700);
+  }, []);
+
+  const copiarLink = useCallback(
+    async (l: Lead) => {
+      const url = leadLinkUrl(window.location.origin, leadVars(l), template);
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        window.prompt('Copie o link do lead:', url);
+      }
+      setCopiado(l.cnpj);
+      setTimeout(() => setCopiado((c) => (c === l.cnpj ? '' : c)), 1500);
+    },
+    [template],
+  );
+
+  const abrirLink = useCallback(
+    (l: Lead) => {
+      const url = leadLinkUrl(window.location.origin, leadVars(l), template);
+      window.open(url, '_blank', 'noopener');
+    },
+    [template],
+  );
+
+  const salvarKey = async () => {
+    const k = apiKeyInput.trim();
     if (!k) return;
-    localStorage.setItem(STORAGE_KEY, k);
-    setKeySalva(true);
-    setEditandoKey(false);
-    carregarSaldo(k);
+    setSalvandoKey(true);
+    setErro('');
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: k }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao salvar a chave');
+      setHasKey(!!data.hasKey);
+      setKeyLast4(data.keyLast4 || '');
+      setApiKeyInput('');
+      setEditandoKey(false);
+      carregarSaldo();
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setSalvandoKey(false);
+    }
   };
 
   const buscar = async () => {
@@ -149,14 +227,14 @@ export default function Painel() {
       };
       const res = await fetch('/api/scrape', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha na busca');
       setLeads(data.leads ?? []);
       setTotal(data.total ?? 0);
-      carregarSaldo(apiKey);
+      carregarSaldo();
     } catch (e) {
       setErro((e as Error).message);
     } finally {
@@ -176,8 +254,8 @@ export default function Painel() {
   };
 
   const saldoTotal = saldo?.saldo_total ?? 0;
-  const semSaldo = keySalva && saldo !== null && saldoTotal <= 0;
-  const podeBuscar = keySalva && !loading && !semSaldo;
+  const semSaldo = hasKey && saldo !== null && saldoTotal <= 0;
+  const podeBuscar = hasKey && !loading && !semSaldo;
   const comWpp = useMemo(() => leads.filter((l) => l.whatsapp).length, [leads]);
   const comEmail = useMemo(() => leads.filter((l) => l.email).length, [leads]);
 
@@ -195,7 +273,7 @@ export default function Painel() {
               <p className="text-xs leading-tight text-zinc-500">Casa dos Dados · leads com telefone e e-mail</p>
             </div>
           </div>
-          <SaldoBadge saldo={saldo} loading={saldoLoading} visivel={keySalva} />
+          <SaldoBadge saldo={saldo} loading={saldoLoading} visivel={hasKey} />
         </div>
       </header>
 
@@ -206,14 +284,25 @@ export default function Painel() {
             <div className="space-y-2">
               <label className="text-sm font-medium text-zinc-700">Chave da API (Casa dos Dados)</label>
               <div className="flex flex-col gap-2 sm:flex-row">
-                <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="cole sua api-key aqui"
+                <input type="password" value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} placeholder="cole sua api-key aqui"
+                  onKeyDown={(e) => e.key === 'Enter' && salvarKey()}
                   className="flex-1 rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" />
-                <button onClick={salvarKey} disabled={!apiKey.trim()}
+                <button onClick={salvarKey} disabled={!apiKeyInput.trim() || salvandoKey}
                   className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-40">
-                  Salvar e validar
+                  {salvandoKey ? 'Salvando…' : 'Salvar e validar'}
                 </button>
+                {hasKey && (
+                  <button onClick={() => { setEditandoKey(false); setApiKeyInput(''); }}
+                    className="rounded-lg border border-zinc-300 px-4 py-2 text-sm text-zinc-600 hover:bg-zinc-50">
+                    cancelar
+                  </button>
+                )}
               </div>
-              <p className="text-xs text-zinc-500">Fica salva só no seu navegador. Pegue em{' '}
+              <p className="text-xs text-zinc-500">
+                {dbReady
+                  ? 'Fica salva no banco (servidor) — não trafega de volta pro navegador.'
+                  : 'Banco não configurado: defina DATABASE_URL pra salvar a chave de forma persistente.'}
+                {' '}Pegue em{' '}
                 <a className="text-emerald-700 underline" href="https://portal.casadosdados.com.br/plataforma/api/chave" target="_blank" rel="noreferrer">portal.casadosdados.com.br</a>.
               </p>
             </div>
@@ -221,7 +310,7 @@ export default function Painel() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm text-zinc-700">
                 <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-                Chave salva <span className="font-mono text-zinc-400">••••{apiKey.slice(-4)}</span>
+                Chave salva no banco <span className="font-mono text-zinc-400">••••{keyLast4}</span>
               </div>
               <button onClick={() => setEditandoKey(true)} className="text-sm text-zinc-500 underline hover:text-zinc-700">trocar</button>
             </div>
@@ -348,12 +437,21 @@ export default function Painel() {
               className="rounded-lg bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40">
               {loading ? 'Buscando…' : `Buscar ${f.limite} leads`}
             </button>
-            {!keySalva && <span className="text-sm text-amber-600">Informe a chave da API primeiro.</span>}
+            {!hasKey && <span className="text-sm text-amber-600">Informe a chave da API primeiro.</span>}
             {semSaldo && <span className="text-sm text-red-600">Saldo zerado — recarregue no portal.</span>}
           </div>
         </section>
 
         {erro && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{erro}</div>}
+
+        <TemplateEditor
+          template={template}
+          onChange={salvarTemplate}
+          onReset={() => salvarTemplate(DEFAULT_TEMPLATE)}
+          sampleVars={leads[0] ? leadVars(leads[0]) : null}
+          status={tplStatus}
+          dbReady={dbReady}
+        />
 
         {(leads.length > 0 || total !== null) && (
           <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
@@ -379,6 +477,7 @@ export default function Painel() {
                     <th className="px-3 py-2 font-medium">Telefone</th>
                     <th className="px-3 py-2 font-medium">WhatsApp</th>
                     <th className="px-3 py-2 font-medium">E-mail</th>
+                    <th className="px-3 py-2 font-medium">Página</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -409,6 +508,18 @@ export default function Painel() {
                         {l.email ? (
                           <span>{l.email}{l.emails.length > 1 && <span className="text-zinc-400"> +{l.emails.length - 1}</span>}</span>
                         ) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => copiarLink(l)}
+                            className="rounded-md bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-200">
+                            {copiado === l.cnpj ? 'copiado!' : 'copiar link'}
+                          </button>
+                          <button onClick={() => abrirLink(l)} title="abrir página"
+                            className="rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-50">
+                            abrir
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
