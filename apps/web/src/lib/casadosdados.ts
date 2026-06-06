@@ -190,39 +190,77 @@ function buildBody(f: SearchFilters) {
 
 type FoneObj = { ddd?: string; numero?: string; tipo?: string; completo?: string };
 
+const asObj = (v: unknown): Record<string, unknown> =>
+  v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+
 function coletarTelefones(raw: Record<string, unknown>): FoneObj[] {
-  const cand =
-    (raw.telefones as unknown) ??
-    (raw.telefone as unknown) ??
-    (raw.contatos as unknown) ??
-    ((raw.contato as Record<string, unknown> | undefined)?.telefones as unknown) ??
-    [];
-  if (!Array.isArray(cand)) return [];
-  return cand
-    .map((t): FoneObj => {
-      if (typeof t === 'string') return { completo: t };
-      const o = t as Record<string, unknown>;
-      return {
-        ddd: o.ddd ? String(o.ddd) : undefined,
-        numero: o.numero ? String(o.numero) : undefined,
-        tipo: o.tipo ? String(o.tipo).toLowerCase() : undefined,
-        completo: o.completo ? String(o.completo) : undefined,
-      };
-    })
-    .filter((t) => t.completo || t.numero);
+  const out: FoneObj[] = [];
+  const push = (ddd?: unknown, num?: unknown, full?: unknown, tipo?: unknown) => {
+    const d = ddd != null ? onlyDigits(String(ddd)) : '';
+    const n = num != null ? onlyDigits(String(num)) : '';
+    const f = full != null ? String(full).trim() : '';
+    if (!n && !f) return;
+    out.push({
+      ddd: d || undefined,
+      numero: n || undefined,
+      completo: f || undefined,
+      tipo: tipo ? String(tipo).toLowerCase() : undefined,
+    });
+  };
+
+  // procura tanto no objeto raiz quanto em um eventual "estabelecimento"
+  const fontes = [raw, asObj(raw.estabelecimento), asObj(raw.contato)];
+
+  for (const o of fontes) {
+    // 1) arrays de telefones (objetos ou strings)
+    for (const arrKey of ['telefones', 'telefone', 'contatos', 'telefones_completos']) {
+      const cand = o[arrKey];
+      if (!Array.isArray(cand)) continue;
+      for (const t of cand) {
+        if (typeof t === 'string') push(undefined, undefined, t);
+        else {
+          const x = asObj(t);
+          push(x.ddd, x.numero ?? x.telefone, x.completo ?? x.numero_completo, x.tipo);
+        }
+      }
+    }
+    // 2) campos planos estilo Receita Federal
+    push(o.ddd_1 ?? o.ddd1, o.telefone_1 ?? o.telefone1);
+    push(o.ddd_2 ?? o.ddd2, o.telefone_2 ?? o.telefone2);
+    // 3) combinados ddd+numero numa string só
+    for (const k of ['ddd_telefone_1', 'ddd_telefone_2', 'telefone_completo']) {
+      if (o[k]) push(undefined, undefined, o[k]);
+    }
+  }
+
+  // dedup por dígitos
+  const seen = new Set<string>();
+  return out.filter((t) => {
+    const key = onlyDigits((t.ddd ?? '') + (t.numero ?? '') + (t.completo ?? ''));
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function coletarEmails(raw: Record<string, unknown>): string[] {
-  const cand =
-    (raw.emails as unknown) ??
-    (raw.email as unknown) ??
-    ((raw.contato as Record<string, unknown> | undefined)?.emails as unknown) ??
-    [];
-  const arr = Array.isArray(cand) ? cand : cand ? [cand] : [];
-  return arr
-    .map((e) => (typeof e === 'string' ? e : ((e as Record<string, unknown>)?.email as string) ?? ((e as Record<string, unknown>)?.endereco as string) ?? ''))
-    .filter(Boolean)
-    .map(String);
+  const out: string[] = [];
+  const add = (v: unknown) => {
+    if (!v) return;
+    if (typeof v === 'string') out.push(v);
+    else {
+      const o = asObj(v);
+      add(o.email ?? o.endereco ?? o.correio_eletronico);
+    }
+  };
+  for (const o of [raw, asObj(raw.estabelecimento), asObj(raw.contato)]) {
+    for (const k of ['emails', 'email', 'correio_eletronico', 'email_1', 'email1']) {
+      const v = o[k];
+      if (Array.isArray(v)) v.forEach(add);
+      else add(v);
+    }
+  }
+  return [...new Set(out.map((e) => String(e).trim()).filter((e) => e.includes('@')))];
 }
 
 function foneStr(t: FoneObj): string {
@@ -326,7 +364,33 @@ export async function searchOficial(
     pagina += 1;
   }
 
-  return { total: total || leads.length, leads: leads.slice(0, alvo) };
+  // prioridade: WhatsApp > telefone qualquer > resto
+  const score = (l: Lead) => (l.whatsapp ? 2 : 0) + (l.telefones.length ? 1 : 0);
+  leads.sort((a, b) => score(b) - score(a));
+
+  // "só com número": só filtra se REALMENTE houver algum com número
+  // (se nenhum tiver, é provável problema de origem — melhor mostrar tudo que zerar)
+  const querSoNumero = filters.comTelefone || filters.somenteCelular;
+  const algumComFone = leads.some((l) => l.telefones.length > 0);
+  const filtrados = querSoNumero && algumComFone ? leads.filter((l) => l.telefones.length > 0) : leads;
+
+  return { total: total || filtrados.length, leads: filtrados.slice(0, alvo) };
+}
+
+/** DEBUG: devolve o primeiro CNPJ cru do "completo" (pra inspecionar os campos). */
+export async function debugRawFirst(
+  apiKey: string,
+  filters: SearchFilters,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const res = await fetch(`${API}/v5/cnpj/pesquisa?tipo_resultado=completo`, {
+    method: 'POST',
+    headers: authHeaders(apiKey),
+    body: JSON.stringify(buildBody({ ...filters, limite: 1, pagina: 1 })),
+    signal,
+  });
+  const data = (await handle(res)) as { cnpjs?: unknown[] };
+  return data.cnpjs?.[0] ?? null;
 }
 
 // ───────────────────── saída CSV (pt-BR / Excel) ─────────────────────
