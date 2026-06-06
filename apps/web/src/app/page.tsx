@@ -9,8 +9,18 @@ import {
   disparoCsv,
   leadLinkUrl,
   leadVars,
+  type Template,
 } from '@/lib/leadLink';
 import TemplateEditor from './_components/TemplateEditor';
+import {
+  addVistos,
+  carregarHistorico,
+  carregarVistos,
+  limparHistorico,
+  limparVistos,
+  registrarBusca,
+  type BuscaHist,
+} from '@/lib/historico';
 
 const UFS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 const PRESETS = [100, 500, 1000, 3000, 6000];
@@ -69,6 +79,15 @@ const INICIAL: Filtros = {
 
 const lista = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
+/** Rótulo curto da busca pro histórico (ex.: "SP · restaurante · CNAE 5611201"). */
+function resumoBusca(f: Filtros): string {
+  const partes = [f.uf || 'BR'];
+  if (f.termo) partes.push(f.termo);
+  if (f.municipios) partes.push(f.municipios.split(',')[0]!.trim());
+  if (f.cnae) partes.push(`CNAE ${f.cnae.split(',')[0]!.trim()}`);
+  return partes.filter(Boolean).join(' · ');
+}
+
 function baixarArquivo(conteudo: string, nome: string) {
   const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -97,7 +116,14 @@ export default function Painel() {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState('');
 
-  const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [templates, setTemplates] = useState<Template[]>([
+    { id: 'padrao', name: 'Padrão', html: DEFAULT_TEMPLATE },
+  ]);
+  const [activeId, setActiveId] = useState('padrao');
+  const activeHtml = useMemo(
+    () => templates.find((t) => t.id === activeId)?.html ?? DEFAULT_TEMPLATE,
+    [templates, activeId],
+  );
   const [tplStatus, setTplStatus] = useState<'' | 'salvando' | 'salvo' | 'erro'>('');
   const [copiado, setCopiado] = useState('');
   const [gerando, setGerando] = useState('');
@@ -105,6 +131,12 @@ export default function Painel() {
   const [links, setLinks] = useState<Record<string, string>>({}); // cnpj → url curta gerada
   const [disparoMsg, setDisparoMsg] = useState(DEFAULT_DISPARO_MSG);
   const [gerandoTodos, setGerandoTodos] = useState(false);
+
+  // histórico de buscas + memória de CNPJs já vistos (localStorage)
+  const [historico, setHistorico] = useState<BuscaHist[]>([]);
+  const [duplicados, setDuplicados] = useState<Set<string>>(new Set());
+  const [ocultarVistos, setOcultarVistos] = useState(false);
+  const [vistosTotal, setVistosTotal] = useState(0);
 
   const set = <K extends keyof Filtros>(k: K, v: Filtros[K]) => setF((p) => ({ ...p, [k]: v }));
 
@@ -133,7 +165,10 @@ export default function Painel() {
         setHasKey(!!data.hasKey);
         setKeyLast4(data.keyLast4 || '');
         setDbReady(data.dbReady !== false);
-        if (typeof data.template === 'string' && data.template) setTemplate(data.template);
+        if (Array.isArray(data.templates) && data.templates.length) {
+          setTemplates(data.templates);
+          setActiveId(data.activeTemplateId || data.templates[0].id);
+        }
         if (typeof data.disparoMsg === 'string' && data.disparoMsg) setDisparoMsg(data.disparoMsg);
         if (data.hasKey) {
           setEditandoKey(false);
@@ -145,10 +180,22 @@ export default function Painel() {
     })();
   }, [carregarSaldo]);
 
-  // Salva o template no banco com debounce (700ms) e mostra o status.
+  // Carrega histórico e CNPJs já vistos (localStorage) ao abrir.
+  useEffect(() => {
+    setHistorico(carregarHistorico());
+    setVistosTotal(carregarVistos().size);
+  }, []);
+
+  // Trocar o template ativo invalida os links já gerados (eles apontam pro template antigo).
+  useEffect(() => {
+    setLinks({});
+  }, [activeHtml]);
+
+  // Salva a biblioteca de templates + ativo no banco com debounce (700ms).
   const tplTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const salvarTemplate = useCallback((t: string) => {
-    setTemplate(t);
+  const salvarTemplates = useCallback((next: Template[], nextActive: string) => {
+    setTemplates(next);
+    setActiveId(nextActive);
     setTplStatus('salvando');
     if (tplTimer.current) clearTimeout(tplTimer.current);
     tplTimer.current = setTimeout(async () => {
@@ -156,7 +203,7 @@ export default function Painel() {
         const res = await fetch('/api/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ template: t }),
+          body: JSON.stringify({ templates: next, activeTemplateId: nextActive }),
         });
         if (!res.ok) throw new Error();
         setTplStatus('salvo');
@@ -189,54 +236,66 @@ export default function Painel() {
         const res = await fetch('/api/links', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vars: leadVars(l), template }),
+          body: JSON.stringify({ vars: leadVars(l), template: activeHtml }),
         });
         const data = await res.json();
         if (res.ok && data.code) {
-          const url = `${window.location.origin}/l/${data.code}`;
+          const url = `${window.location.origin}/l/${data.code}?cnpj=${l.cnpj}`;
           setLinks((m) => ({ ...m, [l.cnpj]: url }));
           return url;
         }
       } catch {
         // sem banco → link longo autossuficiente
       }
-      return leadLinkUrl(window.location.origin, leadVars(l), template);
+      return leadLinkUrl(window.location.origin, leadVars(l), activeHtml);
     },
-    [template, links],
+    [activeHtml, links],
   );
 
-  // Gera (em lote) o link curto de TODOS os leads e devolve o mapa cnpj → url.
-  const gerarLinksLote = useCallback(async (): Promise<Record<string, string>> => {
-    const origin = window.location.origin;
-    let codes: Record<string, string> = {};
-    try {
-      const res = await fetch('/api/links', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ batch: leads.map((l) => ({ cnpj: l.cnpj, vars: leadVars(l) })), template }),
-      });
-      const data = await res.json();
-      if (res.ok && data.links) codes = data.links;
-    } catch {
-      // sem banco → links longos abaixo
-    }
-    const novos: Record<string, string> = {};
-    for (const l of leads) {
-      const code = codes[l.cnpj];
-      novos[l.cnpj] = code ? `${origin}/l/${code}` : leadLinkUrl(origin, leadVars(l), template);
-    }
-    setLinks((m) => ({ ...m, ...novos }));
-    return novos;
-  }, [leads, template]);
+  // Gera (em lote) o link curto dos leads-alvo e devolve o mapa cnpj → url.
+  const gerarLinksLote = useCallback(
+    async (alvo: Lead[]): Promise<Record<string, string>> => {
+      const origin = window.location.origin;
+      let codes: Record<string, string> = {};
+      try {
+        const res = await fetch('/api/links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            batch: alvo.map((l) => ({ cnpj: l.cnpj, vars: leadVars(l) })),
+            template: activeHtml,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.links) codes = data.links;
+      } catch {
+        // sem banco → links longos abaixo
+      }
+      const novos: Record<string, string> = {};
+      for (const l of alvo) {
+        const code = codes[l.cnpj];
+        novos[l.cnpj] = code ? `${origin}/l/${code}?cnpj=${l.cnpj}` : leadLinkUrl(origin, leadVars(l), activeHtml);
+      }
+      setLinks((m) => ({ ...m, ...novos }));
+      return novos;
+    },
+    [activeHtml],
+  );
+
+  // Leads exibidos/disparados: oculta os já vistos quando o filtro está ligado.
+  const leadsVisiveis = useMemo(
+    () => (ocultarVistos ? leads.filter((l) => !duplicados.has(l.cnpj)) : leads),
+    [leads, ocultarVistos, duplicados],
+  );
 
   // Gera os links e baixa o CSV de disparo (contato + link + mensagem montada).
   const gerarDisparo = useCallback(async () => {
-    if (!leads.length) return;
+    if (!leadsVisiveis.length) return;
     setGerandoTodos(true);
     setErro('');
     try {
-      const urls = await gerarLinksLote();
-      const items = leads.map((l) => {
+      const urls = await gerarLinksLote(leadsVisiveis);
+      const items = leadsVisiveis.map((l) => {
         const link = urls[l.cnpj] ?? '';
         return { lead: l, link, mensagem: applyText(disparoMsg, { ...leadVars(l), link }) };
       });
@@ -246,7 +305,7 @@ export default function Painel() {
     } finally {
       setGerandoTodos(false);
     }
-  }, [leads, disparoMsg, f.uf, gerarLinksLote]);
+  }, [leadsVisiveis, disparoMsg, f.uf, gerarLinksLote]);
 
   const copiarLink = useCallback(
     async (l: Lead) => {
@@ -308,6 +367,7 @@ export default function Painel() {
     setLeads([]);
     setTotal(null);
     setLinks({});
+    setDuplicados(new Set());
     try {
       const body: SearchFilters = {
         termo: f.termo || undefined,
@@ -345,8 +405,27 @@ export default function Painel() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha na busca');
-      setLeads(data.leads ?? []);
+      const novosLeads: Lead[] = data.leads ?? [];
+      setLeads(novosLeads);
       setTotal(data.total ?? 0);
+
+      // dedupe contra buscas anteriores: marca os CNPJs já vistos antes de memorizar.
+      const vistos = carregarVistos();
+      const dup = new Set(novosLeads.filter((l) => vistos.has(l.cnpj)).map((l) => l.cnpj));
+      setDuplicados(dup);
+      addVistos(novosLeads.map((l) => l.cnpj));
+      setVistosTotal(carregarVistos().size);
+
+      // registra a busca no histórico (pra reabrir os filtros depois).
+      setHistorico(
+        registrarBusca({
+          filtros: f,
+          resumo: resumoBusca(f),
+          total: data.total ?? 0,
+          retornados: novosLeads.length,
+          novos: novosLeads.length - dup.size,
+        }),
+      );
       carregarSaldo();
     } catch (e) {
       setErro((e as Error).message);
@@ -358,8 +437,8 @@ export default function Painel() {
   const baixarCsv = async () => {
     setGerandoTodos(true);
     try {
-      const urls = await gerarLinksLote(); // CSV já sai com a coluna pagina_link
-      baixarArquivo(leadsToCsv(leads, urls), `leads-${f.uf || 'BR'}-${new Date().toISOString().slice(0, 10)}.csv`);
+      const urls = await gerarLinksLote(leadsVisiveis); // CSV já sai com a coluna pagina_link
+      baixarArquivo(leadsToCsv(leadsVisiveis, urls), `leads-${f.uf || 'BR'}-${new Date().toISOString().slice(0, 10)}.csv`);
     } finally {
       setGerandoTodos(false);
     }
@@ -368,11 +447,22 @@ export default function Painel() {
   const saldoTotal = saldo?.saldo_total ?? 0;
   const semSaldo = hasKey && saldo !== null && saldoTotal <= 0;
   const podeBuscar = hasKey && !loading && !semSaldo;
-  const comWpp = useMemo(() => leads.filter((l) => l.whatsapp).length, [leads]);
-  const comEmail = useMemo(() => leads.filter((l) => l.email).length, [leads]);
+  const comWpp = useMemo(() => leadsVisiveis.filter((l) => l.whatsapp).length, [leadsVisiveis]);
+  const comEmail = useMemo(() => leadsVisiveis.filter((l) => l.email).length, [leadsVisiveis]);
 
   const togglePorte = (code: string) =>
     set('porte', f.porte.includes(code) ? f.porte.filter((c) => c !== code) : [...f.porte, code]);
+
+  const reabrirBusca = (h: BuscaHist) => setF({ ...INICIAL, ...(h.filtros as Filtros) });
+  const limparDedupe = () => {
+    limparVistos();
+    setVistosTotal(0);
+    setDuplicados(new Set());
+  };
+  const limparHist = () => {
+    limparHistorico();
+    setHistorico([]);
+  };
 
   return (
     <div className="min-h-screen bg-zinc-50">
@@ -428,6 +518,49 @@ export default function Painel() {
             </div>
           )}
         </section>
+
+        {/* Últimas buscas + memória de duplicados */}
+        {(historico.length > 0 || vistosTotal > 0) && (
+          <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-zinc-900">Últimas buscas</h2>
+              <div className="flex items-center gap-3 text-xs">
+                {vistosTotal > 0 && (
+                  <span className="text-zinc-500">
+                    {vistosTotal.toLocaleString('pt-BR')} CNPJ(s) memorizados ·{' '}
+                    <button onClick={limparDedupe} className="text-emerald-700 underline hover:text-emerald-800">
+                      limpar memória
+                    </button>
+                  </span>
+                )}
+                {historico.length > 0 && (
+                  <button onClick={limparHist} className="text-zinc-500 underline hover:text-zinc-700">
+                    limpar histórico
+                  </button>
+                )}
+              </div>
+            </div>
+            {historico.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {historico.map((h) => (
+                  <button
+                    key={h.id}
+                    onClick={() => reabrirBusca(h)}
+                    title="reabrir os filtros desta busca"
+                    className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-700 hover:border-emerald-300 hover:bg-emerald-50"
+                  >
+                    <span className="font-medium">{h.resumo}</span>
+                    <span className="text-zinc-400">{h.retornados} leads · {h.novos} novos</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-zinc-500">
+                Os CNPJs já trazidos ficam memorizados pra você não repetir o mesmo lead no disparo.
+              </p>
+            )}
+          </section>
+        )}
 
         {/* Filtros */}
         <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
@@ -557,12 +690,13 @@ export default function Painel() {
         {erro && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{erro}</div>}
 
         <TemplateEditor
-          template={template}
-          onChange={salvarTemplate}
-          onReset={() => salvarTemplate(DEFAULT_TEMPLATE)}
+          templates={templates}
+          activeId={activeId}
+          onChange={salvarTemplates}
           sampleVars={leads[0] ? leadVars(leads[0]) : null}
           status={tplStatus}
           dbReady={dbReady}
+          max={3}
         />
 
         {leads.length > 0 && (
@@ -571,15 +705,22 @@ export default function Painel() {
               <div className="min-w-0 flex-1">
                 <h2 className="text-sm font-semibold text-zinc-900">Disparo em massa</h2>
                 <p className="text-xs text-zinc-500">
-                  Gera o link curto de cada lead e baixa um CSV (telefone, WhatsApp, link e a mensagem já montada) pronto pra importar na sua ferramenta de disparo.
+                  Gera o link curto de cada lead (com o CNPJ na URL) e baixa um CSV (telefone, WhatsApp, link e a
+                  mensagem já montada) pronto pra importar na sua ferramenta de disparo.
+                  <span className="text-zinc-400">
+                    {' '}Template ativo: {templates.find((t) => t.id === activeId)?.name || '—'}.
+                  </span>
+                  {ocultarVistos && duplicados.size > 0 && (
+                    <span className="text-emerald-700"> Ignorando {duplicados.size} já vistos.</span>
+                  )}
                 </p>
               </div>
               <button
                 onClick={gerarDisparo}
-                disabled={gerandoTodos || !leads.length}
+                disabled={gerandoTodos || !leadsVisiveis.length}
                 className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
               >
-                {gerandoTodos ? 'Gerando…' : `Gerar links + CSV de disparo (${leads.length})`}
+                {gerandoTodos ? 'Gerando…' : `Gerar links + CSV de disparo (${leadsVisiveis.length})`}
               </button>
             </div>
             <div className="mt-3">
@@ -604,12 +745,22 @@ export default function Painel() {
           <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-5 py-3">
               <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600">
-                <span className="font-semibold text-zinc-900">{leads.length}</span> leads
+                <span className="font-semibold text-zinc-900">{leadsVisiveis.length}</span> leads
                 {total !== null && <span className="text-zinc-400">· {total.toLocaleString('pt-BR')} no filtro</span>}
                 <Badge>{comWpp} c/ WhatsApp</Badge>
                 <Badge>{comEmail} c/ e-mail</Badge>
+                {duplicados.size > 0 && (
+                  <button
+                    onClick={() => setOcultarVistos((v) => !v)}
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                      ocultarVistos ? 'bg-emerald-600 text-white' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                    }`}
+                  >
+                    {ocultarVistos ? `ocultando ${duplicados.size} já vistos` : `${duplicados.size} já vistos — ocultar`}
+                  </button>
+                )}
               </div>
-              <button onClick={baixarCsv} disabled={!leads.length || gerandoTodos}
+              <button onClick={baixarCsv} disabled={!leadsVisiveis.length || gerandoTodos}
                 className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
                 {gerandoTodos ? 'Gerando…' : 'Baixar CSV (com link)'}
               </button>
@@ -628,10 +779,15 @@ export default function Painel() {
                   </tr>
                 </thead>
                 <tbody>
-                  {leads.map((l) => (
-                    <tr key={l.cnpj} className="border-b border-zinc-50 align-top hover:bg-zinc-50/60">
+                  {leadsVisiveis.map((l) => (
+                    <tr key={l.cnpj} className={`border-b border-zinc-50 align-top hover:bg-zinc-50/60 ${duplicados.has(l.cnpj) ? 'bg-amber-50/40' : ''}`}>
                       <td className="px-5 py-2.5">
-                        <div className="font-medium text-zinc-900">{l.razaoSocial || l.nomeFantasia || '—'}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-zinc-900">{l.razaoSocial || l.nomeFantasia || '—'}</span>
+                          {duplicados.has(l.cnpj) && (
+                            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">já visto</span>
+                          )}
+                        </div>
                         <div className="text-xs text-zinc-500">
                           {[l.nomeFantasia && l.nomeFantasia !== l.razaoSocial ? l.nomeFantasia : '', l.porte, l.dataAbertura && `aberta ${l.dataAbertura}`].filter(Boolean).join(' · ')}
                         </div>

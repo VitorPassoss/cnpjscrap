@@ -8,10 +8,18 @@
 
 import { Pool } from 'pg';
 
+export interface TemplateItem {
+  id: string;
+  name: string;
+  html: string;
+}
+
 export interface Settings {
   apiKey: string;
   template: string;
   disparoMsg: string;
+  templates: TemplateItem[];
+  activeTemplateId: string;
 }
 
 export function dbConfigured(): boolean {
@@ -49,6 +57,8 @@ function ensureTable(): Promise<void> {
          );
          INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
          ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS disparo_msg TEXT NOT NULL DEFAULT '';
+         ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS templates JSONB NOT NULL DEFAULT '[]'::jsonb;
+         ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS active_template_id TEXT NOT NULL DEFAULT '';
          CREATE TABLE IF NOT EXISTS lead_links (
            code       TEXT PRIMARY KEY,
            payload    JSONB NOT NULL,
@@ -66,14 +76,20 @@ function ensureTable(): Promise<void> {
 
 export async function getSettings(): Promise<Settings> {
   await ensureTable();
-  const r = await getPool().query<{ api_key: string; template: string; disparo_msg: string }>(
-    'SELECT api_key, template, disparo_msg FROM app_settings WHERE id = 1',
-  );
+  const r = await getPool().query<{
+    api_key: string;
+    template: string;
+    disparo_msg: string;
+    templates: TemplateItem[] | null;
+    active_template_id: string;
+  }>('SELECT api_key, template, disparo_msg, templates, active_template_id FROM app_settings WHERE id = 1');
   const row = r.rows[0];
   return {
     apiKey: row?.api_key ?? '',
     template: row?.template ?? '',
     disparoMsg: row?.disparo_msg ?? '',
+    templates: Array.isArray(row?.templates) ? row!.templates : [],
+    activeTemplateId: row?.active_template_id ?? '',
   };
 }
 
@@ -82,12 +98,20 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
   await ensureTable();
   await getPool().query(
     `UPDATE app_settings
-        SET api_key     = COALESCE($1, api_key),
-            template    = COALESCE($2, template),
-            disparo_msg = COALESCE($3, disparo_msg),
-            updated_at  = now()
+        SET api_key            = COALESCE($1, api_key),
+            template           = COALESCE($2, template),
+            disparo_msg        = COALESCE($3, disparo_msg),
+            templates          = COALESCE($4::jsonb, templates),
+            active_template_id = COALESCE($5, active_template_id),
+            updated_at         = now()
       WHERE id = 1`,
-    [patch.apiKey ?? null, patch.template ?? null, patch.disparoMsg ?? null],
+    [
+      patch.apiKey ?? null,
+      patch.template ?? null,
+      patch.disparoMsg ?? null,
+      patch.templates ? JSON.stringify(patch.templates) : null,
+      patch.activeTemplateId ?? null,
+    ],
   );
   return getSettings();
 }

@@ -14,6 +14,13 @@ export interface LeadLinkPayload {
   t: string; // template HTML
 }
 
+/** Template nomeado da biblioteca (até 3); um deles fica marcado como ativo. */
+export interface Template {
+  id: string;
+  name: string;
+  html: string;
+}
+
 // ───────────────────────── variáveis disponíveis ─────────────────────────
 
 /** Catálogo de placeholders mostrado no editor. */
@@ -220,9 +227,10 @@ export function decodeLeadLink(d: string): LeadLinkPayload | null {
   }
 }
 
-/** Monta a URL pública completa para um lead. */
+/** Monta a URL pública completa para um lead (com o CNPJ visível na URL). */
 export function leadLinkUrl(origin: string, vars: Record<string, string>, template: string): string {
-  return `${origin}/lead?d=${encodeLeadLink(vars, template)}`;
+  const cnpj = vars.cnpj ? `&cnpj=${encodeURIComponent(vars.cnpj)}` : '';
+  return `${origin}/lead?d=${encodeLeadLink(vars, template)}${cnpj}`;
 }
 
 // ───────────────────────── disparo em massa ─────────────────────────
