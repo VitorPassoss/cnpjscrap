@@ -76,6 +76,10 @@ export interface Lead {
   uf: string;
   municipio: string;
   bairro: string;
+  cep: string;
+  logradouro: string;
+  numero: string;
+  complemento: string;
   endereco: string;
   whatsapp: string;
   whatsappLink: string;
@@ -91,6 +95,11 @@ const onlyDigits = (s: string) => String(s ?? '').replace(/\D/g, '');
 export function formatCnpj(cnpj: string): string {
   const d = onlyDigits(cnpj).padStart(14, '0');
   return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
+}
+
+export function formatCep(cep: string): string {
+  const d = onlyDigits(cep);
+  return d.length === 8 ? d.replace(/(\d{5})(\d{3})/, '$1-$2') : d;
 }
 
 export class CasaDosDadosError extends Error {
@@ -245,10 +254,10 @@ function mapLead(raw: Record<string, unknown>): Lead {
   const emails = coletarEmails(raw);
   const wpp = cels.length ? whatsappDigits(cels[0]!) : '';
 
-  const logradouro = [end?.tipo_logradouro, end?.logradouro, end?.numero, end?.complemento]
-    .filter(Boolean)
-    .join(' ')
-    .trim();
+  const logradouro = [end?.tipo_logradouro, end?.logradouro].filter(Boolean).join(' ').trim();
+  const numero = String(end?.numero ?? '').trim();
+  const complemento = String(end?.complemento ?? '').trim();
+  const enderecoLinha = [logradouro, numero, complemento].filter(Boolean).join(' ').trim();
 
   return {
     cnpj,
@@ -264,7 +273,11 @@ function mapLead(raw: Record<string, unknown>): Lead {
     uf: (end?.uf as string) ?? '',
     municipio: (end?.municipio as string) ?? '',
     bairro: (end?.bairro as string) ?? '',
-    endereco: logradouro,
+    cep: formatCep(String(end?.cep ?? '')),
+    logradouro,
+    numero,
+    complemento,
+    endereco: enderecoLinha,
     whatsapp: wpp,
     whatsappLink: wpp ? `https://api.whatsapp.com/send?phone=${wpp}` : '',
     celulares: cels.map(foneStr),

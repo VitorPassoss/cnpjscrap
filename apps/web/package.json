@@ -14,11 +14,13 @@
     "@cnpjscrap/db": "workspace:*",
     "@cnpjscrap/shared": "workspace:*",
     "next": "^15.0.0",
+    "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.1",
+    "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "autoprefixer": "^10.4.20",
