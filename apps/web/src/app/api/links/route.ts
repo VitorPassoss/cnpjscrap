@@ -23,14 +23,19 @@ export async function POST(req: Request) {
     return Response.json({ error: 'Banco não configurado — defina DATABASE_URL.' }, { status: 503 });
   }
 
-  let body: { vars?: unknown; template?: unknown; batch?: unknown };
+  let body: { vars?: unknown; template?: unknown; templateId?: unknown; batch?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
     return Response.json({ error: 'Corpo inválido.' }, { status: 400 });
   }
 
+  // `templateId` (ti): referência viva — o /l/<code> resolve o HTML atual do
+  // template no momento em que o lead abre, então editar o template no painel
+  // atualiza todos os links dele. `template` (t) vai junto só como snapshot de
+  // fallback (caso o template seja apagado da biblioteca).
   const template = typeof body.template === 'string' ? body.template : '';
+  const templateId = typeof body.templateId === 'string' ? body.templateId : undefined;
 
   // ── Lote: { batch: [{ cnpj, vars }], template } → { links: { [cnpj]: code } } ──
   if (Array.isArray(body.batch)) {
@@ -45,7 +50,7 @@ export async function POST(req: Request) {
       let code = genCode();
       while (usados.has(code)) code = genCode();
       usados.add(code);
-      rows.push({ code, payload: { v: it.vars, t: template } });
+      rows.push({ code, payload: { v: it.vars, t: template, ti: templateId } });
       links[it.cnpj] = code;
     }
     try {
@@ -60,7 +65,7 @@ export async function POST(req: Request) {
   if (typeof body.vars !== 'object' || body.vars === null) {
     return Response.json({ error: 'Payload inválido.' }, { status: 400 });
   }
-  const payload = { v: body.vars, t: template };
+  const payload = { v: body.vars, t: template, ti: templateId };
   try {
     for (let i = 0; i < 5; i++) {
       const code = genCode();

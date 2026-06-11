@@ -13,7 +13,7 @@ function LeadView() {
   // template — sem iframe, então a página rola natural e roda JS nativo.
   useEffect(() => {
     const payload = d ? decodeLeadLink(d) : null;
-    if (!payload) {
+    if (!payload || typeof payload.t !== 'string') {
       setErro(true);
       return;
     }

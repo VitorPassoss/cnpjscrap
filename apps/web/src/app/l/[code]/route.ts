@@ -1,4 +1,4 @@
-import { dbConfigured, getLeadLink } from '@/lib/db';
+import { dbConfigured, getLeadLink, getSettings } from '@/lib/db';
 import { applyTemplate, renderTemplate, type LeadLinkPayload } from '@/lib/leadLink';
 import { compileCss } from '@/lib/tailwind';
 
@@ -18,17 +18,36 @@ export async function GET(_req: Request, ctx: { params: Promise<{ code: string }
   const { code } = await ctx.params;
   const payload = dbConfigured() ? await getLeadLink<LeadLinkPayload>(code) : null;
 
-  if (!payload || typeof payload.t !== 'string' || typeof payload.v !== 'object') {
+  if (!payload || typeof payload.v !== 'object') {
+    return new Response(NOT_FOUND, { status: 404, headers: HTML_HEADERS });
+  }
+
+  // Template "vivo": se o link guarda o id (ti), busca o HTML atual da biblioteca
+  // — assim editar o template no painel reflete em todos os links dele na hora.
+  // Cai no snapshot `t` se o template foi apagado, e por fim no template ativo.
+  let template = typeof payload.t === 'string' ? payload.t : '';
+  if (payload.ti) {
+    try {
+      const s = await getSettings();
+      const atual = s.templates?.find((t) => t.id === payload.ti)?.html;
+      if (atual) template = atual;
+      else if (!template) template = s.templates?.find((t) => t.id === s.activeTemplateId)?.html ?? '';
+    } catch {
+      // banco indisponível → mantém o snapshot `t`
+    }
+  }
+
+  if (!template) {
     return new Response(NOT_FOUND, { status: 404, headers: HTML_HEADERS });
   }
 
   // CSS pré-compilado das classes do template (cacheado) → página rápida, sem CDN.
   let css: string | undefined;
   try {
-    css = await compileCss(applyTemplate(payload.t, payload.v));
+    css = await compileCss(applyTemplate(template, payload.v));
   } catch {
     css = undefined; // se falhar, renderTemplate cai no Tailwind CDN
   }
 
-  return new Response(renderTemplate(payload.t, payload.v, css), { status: 200, headers: HTML_HEADERS });
+  return new Response(renderTemplate(template, payload.v, css), { status: 200, headers: HTML_HEADERS });
 }

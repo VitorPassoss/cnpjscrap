@@ -186,10 +186,12 @@ export default function Painel() {
     setVistosTotal(carregarVistos().size);
   }, []);
 
-  // Trocar o template ativo invalida os links já gerados (eles apontam pro template antigo).
+  // Trocar de template ativo invalida os links em cache (apontam pro template antigo);
+  // editar o HTML do mesmo template NÃO invalida — o link guarda o id e resolve o
+  // HTML atual quando o lead abre, então a edição reflete sozinha nos links.
   useEffect(() => {
     setLinks({});
-  }, [activeHtml]);
+  }, [activeId]);
 
   // Salva a biblioteca de templates + ativo no banco com debounce (700ms).
   const tplTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -236,7 +238,7 @@ export default function Painel() {
         const res = await fetch('/api/links', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vars: leadVars(l), template: activeHtml }),
+          body: JSON.stringify({ vars: leadVars(l), template: activeHtml, templateId: activeId }),
         });
         const data = await res.json();
         if (res.ok && data.code) {
@@ -249,7 +251,7 @@ export default function Painel() {
       }
       return leadLinkUrl(window.location.origin, leadVars(l), activeHtml);
     },
-    [activeHtml, links],
+    [activeHtml, activeId, links],
   );
 
   // Gera (em lote) o link curto dos leads-alvo e devolve o mapa cnpj → url.
@@ -264,6 +266,7 @@ export default function Painel() {
           body: JSON.stringify({
             batch: alvo.map((l) => ({ cnpj: l.cnpj, vars: leadVars(l) })),
             template: activeHtml,
+            templateId: activeId,
           }),
         });
         const data = await res.json();
@@ -279,7 +282,7 @@ export default function Painel() {
       setLinks((m) => ({ ...m, ...novos }));
       return novos;
     },
-    [activeHtml],
+    [activeHtml, activeId],
   );
 
   // Leads exibidos/disparados: oculta os já vistos quando o filtro está ligado.

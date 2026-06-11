@@ -11,7 +11,8 @@ import type { Lead } from './casadosdados';
 
 export interface LeadLinkPayload {
   v: Record<string, string>; // variáveis do lead
-  t: string; // template HTML
+  t?: string; // snapshot do template HTML (fallback / links antigos)
+  ti?: string; // id do template na biblioteca → resolvido dinâmico no /l/<code>
 }
 
 /** Template nomeado da biblioteca (até 3); um deles fica marcado como ativo. */
