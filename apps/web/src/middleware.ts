@@ -2,8 +2,9 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 /**
  * Senha mestra do painel.
- * Protege a raiz `/` e as APIs do painel. Os links públicos (/l/<code>, /lead)
- * e o /login ficam abertos. Se PANEL_PASSWORD não estiver definida, não bloqueia.
+ * Protege a raiz `/` e as APIs do painel. Os links públicos (/l/<code>, /lead,
+ * /cnpj/<cnpj>) e o /login ficam abertos. Se PANEL_PASSWORD não estiver
+ * definida, não bloqueia.
  */
 
 export const COOKIE = 'panel_auth';
@@ -28,5 +29,5 @@ export function middleware(req: NextRequest) {
 
 // Protege tudo, exceto os links públicos, o login e os assets estáticos.
 export const config = {
-  matcher: ['/((?!l/|lead|login|api/login|_next/|favicon).*)'],
+  matcher: ['/((?!l/|lead|cnpj/|login|api/login|_next/|favicon).*)'],
 };

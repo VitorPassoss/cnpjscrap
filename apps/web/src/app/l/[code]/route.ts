@@ -1,25 +1,29 @@
 import { dbConfigured, getLeadLink, getSettings } from '@/lib/db';
-import { applyTemplate, renderTemplate, type LeadLinkPayload } from '@/lib/leadLink';
-import { compileCss } from '@/lib/tailwind';
+import { type LeadLinkPayload, leadVars } from '@/lib/leadLink';
+import { lookupLead } from '@/lib/lookupLead';
+import { resolveApiKey } from '@/lib/resolveKey';
+import { activeTemplateHtml, notFoundResponse, renderLeadResponse } from '@/lib/liveLead';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const HTML_HEADERS = { 'content-type': 'text/html; charset=utf-8' };
-
-const NOT_FOUND = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><script src="https://cdn.tailwindcss.com"></script></head><body class="min-h-screen flex items-center justify-center bg-zinc-100 p-6 text-center"><div><p class="text-lg font-semibold text-zinc-800">Link não encontrado</p><p class="mt-1 text-sm text-zinc-500">Este link de lead não existe ou foi removido.</p></div></body></html>`;
 
 /**
  * Página pública do lead servida como HTML real (sem iframe/sandbox), então o
  * template roda JS nativo: fetch/chamadas de API, modais, eventos etc. Os dados
  * do lead ficam em window.LEAD (ver renderTemplate).
+ *
+ * "URL viva": se o link não existir mais (ou o banco estiver fora) mas a URL
+ * trouxer ?cnpj=, a página é montada na hora consultando o CNPJ — então o link
+ * nunca quebra enquanto houver o CNPJ na URL.
  */
-export async function GET(_req: Request, ctx: { params: Promise<{ code: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ code: string }> }) {
   const { code } = await ctx.params;
+  const cnpjUrl = new URL(req.url).searchParams.get('cnpj')?.replace(/\D/g, '') ?? '';
   const payload = dbConfigured() ? await getLeadLink<LeadLinkPayload>(code) : null;
 
+  // Link não encontrado → tenta montar ao vivo pelo CNPJ da URL (fallback).
   if (!payload || typeof payload.v !== 'object') {
-    return new Response(NOT_FOUND, { status: 404, headers: HTML_HEADERS });
+    return liveFromCnpj(req, cnpjUrl);
   }
 
   // Template "vivo": se o link guarda o id (ti), busca o HTML atual da biblioteca
@@ -37,17 +41,23 @@ export async function GET(_req: Request, ctx: { params: Promise<{ code: string }
     }
   }
 
-  if (!template) {
-    return new Response(NOT_FOUND, { status: 404, headers: HTML_HEADERS });
-  }
+  if (!template) return liveFromCnpj(req, cnpjUrl);
 
-  // CSS pré-compilado das classes do template (cacheado) → página rápida, sem CDN.
-  let css: string | undefined;
+  return renderLeadResponse(template, payload.v as Record<string, string>);
+}
+
+/** Monta a página consultando o CNPJ ao vivo + template ativo. */
+async function liveFromCnpj(req: Request, cnpj: string): Promise<Response> {
+  if (cnpj.length !== 14) return notFoundResponse();
+  const key = await resolveApiKey(req);
+  const lead = await lookupLead(key, cnpj, req.signal);
+  if (!lead) return notFoundResponse();
+  let template = '';
   try {
-    css = await compileCss(applyTemplate(template, payload.v));
+    template = await activeTemplateHtml();
   } catch {
-    css = undefined; // se falhar, renderTemplate cai no Tailwind CDN
+    template = '';
   }
-
-  return new Response(renderTemplate(template, payload.v, css), { status: 200, headers: HTML_HEADERS });
+  if (!template) return notFoundResponse();
+  return renderLeadResponse(template, leadVars(lead));
 }

@@ -372,7 +372,11 @@ export default function Painel() {
     setLinks({});
     setDuplicados(new Set());
     try {
+      // nunca repetir: manda os CNPJs já trazidos antes pra API pular na origem
+      // (teto pra não inflar o corpo; o resto ainda é marcado/ocultado no cliente).
+      const excluirCnpjs = [...carregarVistos()].slice(-2000);
       const body: SearchFilters = {
+        excluirCnpjs,
         termo: f.termo || undefined,
         uf: f.uf ? [f.uf] : [],
         municipios: lista(f.municipios),

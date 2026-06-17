@@ -21,6 +21,9 @@ export interface Saldo {
 }
 
 export interface SearchFilters {
+  // CNPJs específicos (consulta direta) / exclusão (nunca repetir os já vistos)
+  cnpj?: string[];
+  excluirCnpjs?: string[];
   // texto livre (razão social / nome fantasia / sócio)
   termo?: string;
   termoTipo?: 'exata' | 'radical';
@@ -132,6 +135,7 @@ export async function getSaldo(apiKey: string, signal?: AbortSignal): Promise<Sa
 function buildBody(f: SearchFilters) {
   const body: Record<string, unknown> = {
     situacao_cadastral: f.situacao?.length ? f.situacao : ['ATIVA'],
+    cnpj: (f.cnpj ?? []).map(onlyDigits).filter(Boolean),
     uf: (f.uf ?? []).map((u) => u.toUpperCase()),
     municipio: f.municipios ?? [],
     bairro: f.bairros ?? [],
@@ -182,6 +186,10 @@ function buildBody(f: SearchFilters) {
   if (f.simplesOptante || f.excluirSimples) {
     body.simples = { optante: f.simplesOptante ?? false, excluir_optante: f.excluirSimples ?? false };
   }
+
+  // nunca repetir: a própria API exclui da resposta os CNPJs já trazidos antes.
+  const excluir = (f.excluirCnpjs ?? []).map(onlyDigits).filter(Boolean);
+  if (excluir.length) body.excluir = { cnpj: excluir };
 
   return body;
 }
@@ -364,6 +372,12 @@ export async function searchOficial(
     pagina += 1;
   }
 
+  // NUNCA repetir: dedup por CNPJ dentro do próprio resultado (entre páginas).
+  const vistos = new Set<string>();
+  const unicos = leads.filter((l) => l.cnpj && !vistos.has(l.cnpj) && vistos.add(l.cnpj));
+  leads.length = 0;
+  leads.push(...unicos);
+
   // prioridade: WhatsApp > telefone qualquer > resto
   const score = (l: Lead) => (l.whatsapp ? 2 : 0) + (l.telefones.length ? 1 : 0);
   leads.sort((a, b) => score(b) - score(a));
@@ -375,6 +389,30 @@ export async function searchOficial(
   const filtrados = querSoNumero && algumComFone ? leads.filter((l) => l.telefones.length > 0) : leads;
 
   return { total: total || filtrados.length, leads: filtrados.slice(0, alvo) };
+}
+
+/**
+ * Consulta direta de 1 CNPJ (pra "URL viva"): usa a mesma pesquisa, filtrando
+ * pelo CNPJ e aceitando qualquer situação cadastral. Devolve o Lead ou null.
+ */
+export async function lookupOficial(
+  apiKey: string,
+  cnpj: string,
+  signal?: AbortSignal,
+): Promise<Lead | null> {
+  const d = onlyDigits(cnpj);
+  if (d.length !== 14) return null;
+  const res = await fetch(`${API}/v5/cnpj/pesquisa?tipo_resultado=completo`, {
+    method: 'POST',
+    headers: authHeaders(apiKey),
+    body: JSON.stringify(
+      buildBody({ cnpj: [d], limite: 1, situacao: ['ATIVA', 'BAIXADA', 'INAPTA', 'SUSPENSA', 'NULA'] }),
+    ),
+    signal,
+  });
+  const data = (await handle(res)) as { cnpjs?: Record<string, unknown>[] };
+  const raw = data.cnpjs?.[0];
+  return raw ? mapLead(raw) : null;
 }
 
 // ───────────────────── saída CSV (pt-BR / Excel) ─────────────────────

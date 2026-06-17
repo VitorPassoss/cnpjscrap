@@ -7,13 +7,20 @@ import { decodeLeadLink, renderTemplate } from '@/lib/leadLink';
 function LeadView() {
   const params = useSearchParams();
   const d = params.get('d');
+  const cnpj = params.get('cnpj')?.replace(/\D/g, '') ?? '';
   const [erro, setErro] = useState(false);
 
   // Fallback (URL longa, dados no link). Substitui o documento inteiro pelo
   // template — sem iframe, então a página rola natural e roda JS nativo.
+  // Sem dados no link (sem `d`) mas com CNPJ na URL → "URL viva": manda pra
+  // /cnpj/<cnpj>, que monta o template consultando o lead na hora.
   useEffect(() => {
     const payload = d ? decodeLeadLink(d) : null;
     if (!payload || typeof payload.t !== 'string') {
+      if (cnpj.length === 14) {
+        window.location.replace(`/cnpj/${cnpj}`);
+        return;
+      }
       setErro(true);
       return;
     }
@@ -21,7 +28,7 @@ function LeadView() {
     document.open();
     document.write(doc);
     document.close();
-  }, [d]);
+  }, [d, cnpj]);
 
   if (erro) {
     return (
