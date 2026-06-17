@@ -21,6 +21,9 @@ export interface Saldo {
 }
 
 export interface SearchFilters {
+  // fonte dos dados: 'casa' = busca por filtros (Casa dos Dados, gasta saldo);
+  // 'brasilapi' = consulta grátis por lista de CNPJs (sem filtro por UF/CNAE).
+  fonte?: 'casa' | 'brasilapi';
   // CNPJs específicos (consulta direta) / exclusão (nunca repetir os já vistos)
   cnpj?: string[];
   excluirCnpjs?: string[];

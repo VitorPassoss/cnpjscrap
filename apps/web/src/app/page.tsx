@@ -79,6 +79,10 @@ const INICIAL: Filtros = {
 
 const lista = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
+/** Extrai CNPJs (14 dígitos) de um texto colado — aceita vírgula, espaço, quebra de linha, com ou sem máscara. */
+const parseCnpjs = (s: string) =>
+  [...new Set(s.split(/[\s,;]+/).map((x) => x.replace(/\D/g, '')).filter((x) => x.length === 14))];
+
 /** Rótulo curto da busca pro histórico (ex.: "SP · restaurante · CNAE 5611201"). */
 function resumoBusca(f: Filtros): string {
   const partes = [f.uf || 'BR'];
@@ -111,6 +115,8 @@ export default function Painel() {
 
   const [f, setF] = useState<Filtros>(INICIAL);
   const [avancado, setAvancado] = useState(false);
+  const [fonte, setFonte] = useState<'casa' | 'brasilapi'>('casa');
+  const [cnpjsInput, setCnpjsInput] = useState('');
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -375,36 +381,40 @@ export default function Painel() {
       // nunca repetir: manda os CNPJs já trazidos antes pra API pular na origem
       // (teto pra não inflar o corpo; o resto ainda é marcado/ocultado no cliente).
       const excluirCnpjs = [...carregarVistos()].slice(-2000);
-      const body: SearchFilters = {
-        excluirCnpjs,
-        termo: f.termo || undefined,
-        uf: f.uf ? [f.uf] : [],
-        municipios: lista(f.municipios),
-        bairros: lista(f.bairros),
-        ddd: lista(f.ddd),
-        cnaes: lista(f.cnae).map((c) => c.replace(/\D/g, '')).filter(Boolean),
-        naturezas: lista(f.naturezas),
-        situacao: f.situacao ? [f.situacao as Situacao] : ['ATIVA'],
-        porte: f.porte,
-        somenteMatriz: f.matriz === 'matriz',
-        somenteFilial: f.matriz === 'filial',
-        capitalMin: f.capitalMin ? Number(f.capitalMin) : undefined,
-        capitalMax: f.capitalMax ? Number(f.capitalMax) : undefined,
-        meiOptante: f.mei === 'so',
-        excluirMei: f.mei === 'excluir',
-        simplesOptante: f.simples === 'optante',
-        excluirSimples: f.simples === 'excluir',
-        ultimosDias: f.ultimosDias ? Number(f.ultimosDias) : undefined,
-        aberturaInicio: f.aberturaInicio || undefined,
-        aberturaFim: f.aberturaFim || undefined,
-        comTelefone: f.comTelefone || f.somenteCelular,
-        somenteCelular: f.somenteCelular,
-        comEmail: f.comEmail,
-        excluirEmailContab: f.excluirEmailContab,
-        excluirVisualizadas: f.excluirVisualizadas,
-        limite: f.limite,
-        pagina: 1,
-      };
+      const body: SearchFilters =
+        fonte === 'brasilapi'
+          ? { fonte: 'brasilapi', cnpj: parseCnpjs(cnpjsInput), excluirCnpjs }
+          : {
+              fonte: 'casa',
+              excluirCnpjs,
+              termo: f.termo || undefined,
+              uf: f.uf ? [f.uf] : [],
+              municipios: lista(f.municipios),
+              bairros: lista(f.bairros),
+              ddd: lista(f.ddd),
+              cnaes: lista(f.cnae).map((c) => c.replace(/\D/g, '')).filter(Boolean),
+              naturezas: lista(f.naturezas),
+              situacao: f.situacao ? [f.situacao as Situacao] : ['ATIVA'],
+              porte: f.porte,
+              somenteMatriz: f.matriz === 'matriz',
+              somenteFilial: f.matriz === 'filial',
+              capitalMin: f.capitalMin ? Number(f.capitalMin) : undefined,
+              capitalMax: f.capitalMax ? Number(f.capitalMax) : undefined,
+              meiOptante: f.mei === 'so',
+              excluirMei: f.mei === 'excluir',
+              simplesOptante: f.simples === 'optante',
+              excluirSimples: f.simples === 'excluir',
+              ultimosDias: f.ultimosDias ? Number(f.ultimosDias) : undefined,
+              aberturaInicio: f.aberturaInicio || undefined,
+              aberturaFim: f.aberturaFim || undefined,
+              comTelefone: f.comTelefone || f.somenteCelular,
+              somenteCelular: f.somenteCelular,
+              comEmail: f.comEmail,
+              excluirEmailContab: f.excluirEmailContab,
+              excluirVisualizadas: f.excluirVisualizadas,
+              limite: f.limite,
+              pagina: 1,
+            };
       const res = await fetch('/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -427,13 +437,13 @@ export default function Painel() {
       setHistorico(
         registrarBusca({
           filtros: f,
-          resumo: resumoBusca(f),
+          resumo: fonte === 'brasilapi' ? `BrasilAPI · ${novosLeads.length} CNPJ(s)` : resumoBusca(f),
           total: data.total ?? 0,
           retornados: novosLeads.length,
           novos: novosLeads.length - dup.size,
         }),
       );
-      carregarSaldo();
+      if (fonte === 'casa') carregarSaldo();
     } catch (e) {
       setErro((e as Error).message);
     } finally {
@@ -453,7 +463,9 @@ export default function Painel() {
 
   const saldoTotal = saldo?.saldo_total ?? 0;
   const semSaldo = hasKey && saldo !== null && saldoTotal <= 0;
-  const podeBuscar = hasKey && !loading && !semSaldo;
+  const cnpjsAlvo = useMemo(() => parseCnpjs(cnpjsInput), [cnpjsInput]);
+  const podeBuscar =
+    fonte === 'brasilapi' ? !loading && cnpjsAlvo.length > 0 : hasKey && !loading && !semSaldo;
   const comWpp = useMemo(() => leadsVisiveis.filter((l) => l.whatsapp).length, [leadsVisiveis]);
   const comEmail = useMemo(() => leadsVisiveis.filter((l) => l.email).length, [leadsVisiveis]);
 
@@ -573,6 +585,34 @@ export default function Painel() {
         <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
           <h2 className="mb-4 text-sm font-semibold text-zinc-900">Filtros</h2>
 
+          {/* fonte dos dados */}
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-zinc-600">Fonte:</span>
+            {([['casa', 'Casa dos Dados'], ['brasilapi', 'BrasilAPI (grátis)']] as const).map(([val, lbl]) => (
+              <button key={val} onClick={() => setFonte(val)}
+                className={`rounded-md px-3 py-1 text-sm font-medium transition ${fonte === val ? 'bg-emerald-600 text-white' : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200'}`}>
+                {lbl}
+              </button>
+            ))}
+            <span className="text-xs text-zinc-400">
+              {fonte === 'casa'
+                ? 'busca por filtros · consome saldo'
+                : 'consulta por CNPJ · sem saldo, sem filtro por UF/CNAE'}
+            </span>
+          </div>
+
+          {fonte === 'brasilapi' && (
+            <Campo label="CNPJs (um por linha ou separados por vírgula)" span2>
+              <textarea value={cnpjsInput} onChange={(e) => setCnpjsInput(e.target.value)} rows={5}
+                placeholder={'12.345.678/0001-90\n98765432000110'} className={`${inp} font-mono`} />
+              <span className="mt-1 block text-xs text-zinc-400">
+                {cnpjsAlvo.length} CNPJ(s) válido(s) detectado(s) · máx. 500 por consulta
+              </span>
+            </Campo>
+          )}
+
+          {fonte === 'casa' && (
+            <>
           {/* texto + localização + atividade */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             <Campo label="Buscar texto (razão / fantasia)" span2>
@@ -683,14 +723,19 @@ export default function Painel() {
               <span className="text-xs text-zinc-400">máx. 6000 por busca · acima de 1000 pagina e consome mais saldo</span>
             </div>
           </div>
+            </>
+          )}
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <button onClick={buscar} disabled={!podeBuscar}
               className="rounded-lg bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40">
-              {loading ? 'Buscando…' : `Buscar ${f.limite} leads`}
+              {loading
+                ? fonte === 'brasilapi' ? 'Consultando…' : 'Buscando…'
+                : fonte === 'brasilapi' ? `Consultar ${cnpjsAlvo.length} CNPJ(s)` : `Buscar ${f.limite} leads`}
             </button>
-            {!hasKey && <span className="text-sm text-amber-600">Informe a chave da API primeiro.</span>}
-            {semSaldo && <span className="text-sm text-red-600">Saldo zerado — recarregue no portal.</span>}
+            {fonte === 'casa' && !hasKey && <span className="text-sm text-amber-600">Informe a chave da API primeiro.</span>}
+            {fonte === 'casa' && semSaldo && <span className="text-sm text-red-600">Saldo zerado — recarregue no portal.</span>}
+            {fonte === 'brasilapi' && !cnpjsAlvo.length && <span className="text-sm text-amber-600">Cole ao menos um CNPJ.</span>}
           </div>
         </section>
 

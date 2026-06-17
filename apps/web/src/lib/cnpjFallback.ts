@@ -105,3 +105,29 @@ export async function lookupBrasilApi(cnpj: string, signal?: AbortSignal): Promi
     return null;
   }
 }
+
+/** Teto de CNPJs por busca na BrasilAPI (rate limit + evitar abuso). */
+export const MAX_BRASILAPI = 500;
+
+/**
+ * Consulta vários CNPJs na BrasilAPI com concorrência limitada (a API é grátis
+ * mas tem rate limit). Deduplica a entrada e ignora os que falharem.
+ */
+export async function lookupManyBrasilApi(
+  cnpjs: string[],
+  signal?: AbortSignal,
+): Promise<Lead[]> {
+  const unicos = [...new Set(cnpjs.map(onlyDigits).filter((d) => d.length === 14))].slice(0, MAX_BRASILAPI);
+  const leads: Lead[] = [];
+  const CONC = 4;
+  let i = 0;
+  async function worker() {
+    while (i < unicos.length) {
+      const cnpj = unicos[i++]!;
+      const lead = await lookupBrasilApi(cnpj, signal);
+      if (lead) leads.push(lead);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONC, unicos.length) }, worker));
+  return leads;
+}
