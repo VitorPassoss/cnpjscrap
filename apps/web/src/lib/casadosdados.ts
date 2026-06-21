@@ -21,9 +21,9 @@ export interface Saldo {
 }
 
 export interface SearchFilters {
-  // fonte dos dados: 'casa' = busca por filtros (Casa dos Dados, gasta saldo);
-  // 'brasilapi' = consulta grátis por lista de CNPJs (sem filtro por UF/CNAE).
-  fonte?: 'casa' | 'brasilapi';
+  // fonte dos dados: 'casa' = API paga (gasta saldo, listas grandes);
+  // 'gratis' = busca pública do Casa dos Dados (sem saldo) + enriquecimento grátis.
+  fonte?: 'casa' | 'gratis';
   // CNPJs específicos (consulta direta) / exclusão (nunca repetir os já vistos)
   cnpj?: string[];
   excluirCnpjs?: string[];
@@ -417,6 +417,83 @@ export async function lookupOficial(
   const raw = data.cnpjs?.[0];
   return raw ? mapLead(raw) : null;
 }
+
+// ───────────────────── busca pública GRÁTIS (sem saldo) ─────────────────────
+
+/**
+ * Endpoint público do Casa dos Dados: aceita os MESMOS filtros da pesquisa paga,
+ * sem chave e sem consumir saldo — mas devolve só CNPJ + razão (sem contato) e
+ * trava em 20 por consulta (não pagina). Pra passar de 20, ver collectPublicCnpjs.
+ */
+const PUBLIC_HEADERS = {
+  'Content-Type': 'application/json',
+  Accept: 'application/json',
+  Origin: SITE,
+  Referer: `${SITE}/`,
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+};
+
+const PUBLIC_PAGE = 20; // teto fixo do endpoint público
+
+/** Uma página (até 20) da busca pública → lista de CNPJs (só dígitos). */
+async function searchPublicPage(filters: SearchFilters, signal?: AbortSignal): Promise<string[]> {
+  const res = await fetch(`${API}/v5/public/cnpj/pesquisa`, {
+    method: 'POST',
+    headers: PUBLIC_HEADERS,
+    body: JSON.stringify(buildBody(filters)),
+    signal,
+  });
+  if (!res.ok) return [];
+  const data = (await res.json()) as { cnpjs?: { cnpj?: string }[] };
+  return (data.cnpjs ?? []).map((c) => onlyDigits(c.cnpj ?? '')).filter((d) => d.length === 14);
+}
+
+const ymd = (d: Date) => d.toISOString().slice(0, 10);
+const parseYmd = (s: string) => new Date(`${s}T00:00:00Z`);
+const DAY = 86400000;
+
+/**
+ * Fura o teto de 20 particionando a busca pública por janelas de DATA DE ABERTURA
+ * (partição adaptativa: quando uma janela vem "cheia" — 20 resultados — ela é
+ * dividida ao meio; quando vem com menos, está esgotada). Junta tudo deduplicado
+ * até atingir `target` ou o teto de requisições. Respeita `excluirCnpjs`.
+ */
+export async function collectPublicCnpjs(
+  filters: SearchFilters,
+  target: number,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const seen = new Set<string>();
+  const exclude = new Set((filters.excluirCnpjs ?? []).map(onlyDigits));
+  const start = filters.aberturaInicio || '1985-01-01';
+  const end = filters.aberturaFim || ymd(new Date());
+
+  const fila: [string, string][] = [[start, end]];
+  let reqs = 0;
+  const MAX_REQS = 80;
+
+  while (fila.length && seen.size < target && reqs < MAX_REQS) {
+    const [a, b] = fila.shift()!;
+    const cnpjs = await searchPublicPage(
+      { ...filters, ultimosDias: undefined, aberturaInicio: a, aberturaFim: b },
+      signal,
+    );
+    reqs += 1;
+    for (const c of cnpjs) if (!exclude.has(c)) seen.add(c);
+
+    // janela cheia e ainda divisível → quebra ao meio (mais resultados novos)
+    const dias = Math.round((parseYmd(b).getTime() - parseYmd(a).getTime()) / DAY);
+    if (cnpjs.length >= PUBLIC_PAGE && dias > 0) {
+      const meio = new Date(parseYmd(a).getTime() + Math.floor(dias / 2) * DAY);
+      fila.push([a, ymd(meio)], [ymd(new Date(meio.getTime() + DAY)), b]);
+    }
+  }
+  return [...seen].slice(0, target);
+}
+
+/** Teto de leads pela fonte grátis (cada um vira 1 consulta de enriquecimento). */
+export const MAX_GRATIS = 500;
 
 // ───────────────────── saída CSV (pt-BR / Excel) ─────────────────────
 

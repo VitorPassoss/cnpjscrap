@@ -1,15 +1,17 @@
 /**
- * Fonte pública GRÁTIS de consulta de 1 CNPJ (fallback da "URL viva" quando o
- * Casa dos Dados falha/sem saldo). Usa a BrasilAPI — dados da Receita Federal,
- * sem chave e sem consumir saldo. Cobre o essencial (razão, endereço, telefone,
- * e-mail quando houver); mapeia pro mesmo formato Lead do Casa dos Dados.
+ * Detalhe GRÁTIS de 1 CNPJ via minhareceita.org (dados abertos da Receita
+ * Federal — sem chave, sem saldo, NÃO é a BrasilAPI). Traz telefone/e-mail/
+ * endereço e é mapeado pro mesmo formato Lead do Casa dos Dados.
  *
- * https://brasilapi.com.br/api/cnpj/v1/{cnpj}
+ * Usado tanto pra enriquecer a busca pública (fonte grátis) quanto como fallback
+ * da "URL viva".
+ *
+ * https://minhareceita.org/{cnpj}
  */
 
 import { formatCnpj, formatCep, type Lead } from './casadosdados';
 
-const BRASILAPI = 'https://brasilapi.com.br/api/cnpj/v1';
+const MINHARECEITA = 'https://minhareceita.org';
 const SITE = 'https://casadosdados.com.br';
 
 const onlyDigits = (s: unknown) => String(s ?? '').replace(/\D/g, '');
@@ -29,7 +31,8 @@ const isCelular = (d: string) => {
   return local.length === 9 && local.startsWith('9');
 };
 
-interface BrasilApiCnpj {
+/** Formato "Receita" (minhareceita / dados abertos). */
+interface ReceitaJson {
   razao_social?: string;
   nome_fantasia?: string;
   descricao_situacao_cadastral?: string;
@@ -50,7 +53,7 @@ interface BrasilApiCnpj {
   email?: string | null;
 }
 
-function mapBrasilApi(cnpj: string, j: BrasilApiCnpj): Lead {
+export function mapReceita(cnpj: string, j: ReceitaJson): Lead {
   const fonesRaw = [j.ddd_telefone_1, j.ddd_telefone_2].map(onlyDigits).filter((d) => d.length >= 10);
   const telefones = fonesRaw.map(formatFone);
   const celularesRaw = fonesRaw.filter(isCelular);
@@ -92,39 +95,33 @@ function mapBrasilApi(cnpj: string, j: BrasilApiCnpj): Lead {
   };
 }
 
-/** Consulta 1 CNPJ na BrasilAPI. Devolve Lead ou null (inválido/não encontrado). */
-export async function lookupBrasilApi(cnpj: string, signal?: AbortSignal): Promise<Lead | null> {
+/** Consulta 1 CNPJ no minhareceita.org. Devolve Lead ou null. */
+export async function lookupReceita(cnpj: string, signal?: AbortSignal): Promise<Lead | null> {
   const d = onlyDigits(cnpj);
   if (d.length !== 14) return null;
   try {
-    const res = await fetch(`${BRASILAPI}/${d}`, { signal, headers: { Accept: 'application/json' } });
+    const res = await fetch(`${MINHARECEITA}/${d}`, { signal, headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
-    const j = (await res.json()) as BrasilApiCnpj;
-    return mapBrasilApi(d, j);
+    const j = (await res.json()) as ReceitaJson;
+    return mapReceita(d, j);
   } catch {
     return null;
   }
 }
 
-/** Teto de CNPJs por busca na BrasilAPI (rate limit + evitar abuso). */
-export const MAX_BRASILAPI = 500;
-
 /**
- * Consulta vários CNPJs na BrasilAPI com concorrência limitada (a API é grátis
- * mas tem rate limit). Deduplica a entrada e ignora os que falharem.
+ * Consulta vários CNPJs com concorrência limitada (a API é grátis mas convém não
+ * martelar). Deduplica a entrada e ignora os que falharem.
  */
-export async function lookupManyBrasilApi(
-  cnpjs: string[],
-  signal?: AbortSignal,
-): Promise<Lead[]> {
-  const unicos = [...new Set(cnpjs.map(onlyDigits).filter((d) => d.length === 14))].slice(0, MAX_BRASILAPI);
+export async function lookupManyReceita(cnpjs: string[], signal?: AbortSignal): Promise<Lead[]> {
+  const unicos = [...new Set(cnpjs.map(onlyDigits).filter((d) => d.length === 14))];
   const leads: Lead[] = [];
-  const CONC = 4;
+  const CONC = 6;
   let i = 0;
   async function worker() {
     while (i < unicos.length) {
       const cnpj = unicos[i++]!;
-      const lead = await lookupBrasilApi(cnpj, signal);
+      const lead = await lookupReceita(cnpj, signal);
       if (lead) leads.push(lead);
     }
   }

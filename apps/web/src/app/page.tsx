@@ -79,10 +79,6 @@ const INICIAL: Filtros = {
 
 const lista = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
-/** Extrai CNPJs (14 dígitos) de um texto colado — aceita vírgula, espaço, quebra de linha, com ou sem máscara. */
-const parseCnpjs = (s: string) =>
-  [...new Set(s.split(/[\s,;]+/).map((x) => x.replace(/\D/g, '')).filter((x) => x.length === 14))];
-
 /** Rótulo curto da busca pro histórico (ex.: "SP · restaurante · CNAE 5611201"). */
 function resumoBusca(f: Filtros): string {
   const partes = [f.uf || 'BR'];
@@ -115,8 +111,7 @@ export default function Painel() {
 
   const [f, setF] = useState<Filtros>(INICIAL);
   const [avancado, setAvancado] = useState(false);
-  const [fonte, setFonte] = useState<'casa' | 'brasilapi'>('casa');
-  const [cnpjsInput, setCnpjsInput] = useState('');
+  const [fonte, setFonte] = useState<'casa' | 'gratis'>('casa');
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -370,7 +365,11 @@ export default function Painel() {
     }
   };
 
-  const buscar = async () => {
+  const buscar = async (override?: Partial<Filtros>) => {
+    // override permite disparar a busca já com filtros novos (ex.: atalhos de data),
+    // sem esperar o re-render do estado. Reflete o override no painel também.
+    const ff = { ...f, ...override };
+    if (override) setF(ff);
     setLoading(true);
     setErro('');
     setLeads([]);
@@ -381,40 +380,37 @@ export default function Painel() {
       // nunca repetir: manda os CNPJs já trazidos antes pra API pular na origem
       // (teto pra não inflar o corpo; o resto ainda é marcado/ocultado no cliente).
       const excluirCnpjs = [...carregarVistos()].slice(-2000);
-      const body: SearchFilters =
-        fonte === 'brasilapi'
-          ? { fonte: 'brasilapi', cnpj: parseCnpjs(cnpjsInput), excluirCnpjs }
-          : {
-              fonte: 'casa',
-              excluirCnpjs,
-              termo: f.termo || undefined,
-              uf: f.uf ? [f.uf] : [],
-              municipios: lista(f.municipios),
-              bairros: lista(f.bairros),
-              ddd: lista(f.ddd),
-              cnaes: lista(f.cnae).map((c) => c.replace(/\D/g, '')).filter(Boolean),
-              naturezas: lista(f.naturezas),
-              situacao: f.situacao ? [f.situacao as Situacao] : ['ATIVA'],
-              porte: f.porte,
-              somenteMatriz: f.matriz === 'matriz',
-              somenteFilial: f.matriz === 'filial',
-              capitalMin: f.capitalMin ? Number(f.capitalMin) : undefined,
-              capitalMax: f.capitalMax ? Number(f.capitalMax) : undefined,
-              meiOptante: f.mei === 'so',
-              excluirMei: f.mei === 'excluir',
-              simplesOptante: f.simples === 'optante',
-              excluirSimples: f.simples === 'excluir',
-              ultimosDias: f.ultimosDias ? Number(f.ultimosDias) : undefined,
-              aberturaInicio: f.aberturaInicio || undefined,
-              aberturaFim: f.aberturaFim || undefined,
-              comTelefone: f.comTelefone || f.somenteCelular,
-              somenteCelular: f.somenteCelular,
-              comEmail: f.comEmail,
-              excluirEmailContab: f.excluirEmailContab,
-              excluirVisualizadas: f.excluirVisualizadas,
-              limite: f.limite,
-              pagina: 1,
-            };
+      const body: SearchFilters = {
+        fonte,
+        excluirCnpjs,
+        termo: ff.termo || undefined,
+        uf: ff.uf ? [ff.uf] : [],
+        municipios: lista(ff.municipios),
+        bairros: lista(ff.bairros),
+        ddd: lista(ff.ddd),
+        cnaes: lista(ff.cnae).map((c) => c.replace(/\D/g, '')).filter(Boolean),
+        naturezas: lista(ff.naturezas),
+        situacao: ff.situacao ? [ff.situacao as Situacao] : ['ATIVA'],
+        porte: ff.porte,
+        somenteMatriz: ff.matriz === 'matriz',
+        somenteFilial: ff.matriz === 'filial',
+        capitalMin: ff.capitalMin ? Number(ff.capitalMin) : undefined,
+        capitalMax: ff.capitalMax ? Number(ff.capitalMax) : undefined,
+        meiOptante: ff.mei === 'so',
+        excluirMei: ff.mei === 'excluir',
+        simplesOptante: ff.simples === 'optante',
+        excluirSimples: ff.simples === 'excluir',
+        ultimosDias: ff.ultimosDias ? Number(ff.ultimosDias) : undefined,
+        aberturaInicio: ff.aberturaInicio || undefined,
+        aberturaFim: ff.aberturaFim || undefined,
+        comTelefone: ff.comTelefone || ff.somenteCelular,
+        somenteCelular: ff.somenteCelular,
+        comEmail: ff.comEmail,
+        excluirEmailContab: ff.excluirEmailContab,
+        excluirVisualizadas: ff.excluirVisualizadas,
+        limite: ff.limite,
+        pagina: 1,
+      };
       const res = await fetch('/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -436,8 +432,8 @@ export default function Painel() {
       // registra a busca no histórico (pra reabrir os filtros depois).
       setHistorico(
         registrarBusca({
-          filtros: f,
-          resumo: fonte === 'brasilapi' ? `BrasilAPI · ${novosLeads.length} CNPJ(s)` : resumoBusca(f),
+          filtros: ff,
+          resumo: fonte === 'gratis' ? `${resumoBusca(ff)} · grátis` : resumoBusca(ff),
           total: data.total ?? 0,
           retornados: novosLeads.length,
           novos: novosLeads.length - dup.size,
@@ -463,9 +459,7 @@ export default function Painel() {
 
   const saldoTotal = saldo?.saldo_total ?? 0;
   const semSaldo = hasKey && saldo !== null && saldoTotal <= 0;
-  const cnpjsAlvo = useMemo(() => parseCnpjs(cnpjsInput), [cnpjsInput]);
-  const podeBuscar =
-    fonte === 'brasilapi' ? !loading && cnpjsAlvo.length > 0 : hasKey && !loading && !semSaldo;
+  const podeBuscar = fonte === 'gratis' ? !loading : hasKey && !loading && !semSaldo;
   const comWpp = useMemo(() => leadsVisiveis.filter((l) => l.whatsapp).length, [leadsVisiveis]);
   const comEmail = useMemo(() => leadsVisiveis.filter((l) => l.email).length, [leadsVisiveis]);
 
@@ -588,7 +582,7 @@ export default function Painel() {
           {/* fonte dos dados */}
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium text-zinc-600">Fonte:</span>
-            {([['casa', 'Casa dos Dados'], ['brasilapi', 'BrasilAPI (grátis)']] as const).map(([val, lbl]) => (
+            {([['casa', 'Casa dos Dados (pago)'], ['gratis', 'Grátis']] as const).map(([val, lbl]) => (
               <button key={val} onClick={() => setFonte(val)}
                 className={`rounded-md px-3 py-1 text-sm font-medium transition ${fonte === val ? 'bg-emerald-600 text-white' : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200'}`}>
                 {lbl}
@@ -596,23 +590,11 @@ export default function Painel() {
             ))}
             <span className="text-xs text-zinc-400">
               {fonte === 'casa'
-                ? 'busca por filtros · consome saldo'
-                : 'consulta por CNPJ · sem saldo, sem filtro por UF/CNAE'}
+                ? 'busca por filtros · consome saldo · listas grandes'
+                : 'mesmos filtros · sem saldo · até 500 · mais lento'}
             </span>
           </div>
 
-          {fonte === 'brasilapi' && (
-            <Campo label="CNPJs (um por linha ou separados por vírgula)" span2>
-              <textarea value={cnpjsInput} onChange={(e) => setCnpjsInput(e.target.value)} rows={5}
-                placeholder={'12.345.678/0001-90\n98765432000110'} className={`${inp} font-mono`} />
-              <span className="mt-1 block text-xs text-zinc-400">
-                {cnpjsAlvo.length} CNPJ(s) válido(s) detectado(s) · máx. 500 por consulta
-              </span>
-            </Campo>
-          )}
-
-          {fonte === 'casa' && (
-            <>
           {/* texto + localização + atividade */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             <Campo label="Buscar texto (razão / fantasia)" span2>
@@ -641,6 +623,25 @@ export default function Painel() {
             <Campo label="Abertas nos últimos (dias)">
               <input type="number" min={0} value={f.ultimosDias} onChange={(e) => set('ultimosDias', e.target.value)} placeholder="todas" className={inp} />
             </Campo>
+          </div>
+
+          {/* atalhos de abertura recente — seleciona um e já busca automático */}
+          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+            <span className="text-xs font-medium text-zinc-600">Abertas recentemente:</span>
+            {([['7', '1 semana'], ['15', '15 dias'], ['30', '30 dias']] as const).map(([dias, lbl]) => (
+              <button key={dias} onClick={() => buscar({ ultimosDias: dias })} disabled={!podeBuscar}
+                className={`rounded-md px-3 py-1 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  f.ultimosDias === dias ? 'bg-emerald-600 text-white' : 'bg-white text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100'
+                }`}>
+                {lbl}
+              </button>
+            ))}
+            {f.ultimosDias && (
+              <button onClick={() => set('ultimosDias', '')} className="text-xs text-zinc-500 underline hover:text-zinc-700">
+                limpar
+              </button>
+            )}
+            <span className="text-xs text-zinc-400">clica e já puxa os CNPJs abertos no período</span>
           </div>
 
           {/* contato / qualidade */}
@@ -720,22 +721,24 @@ export default function Painel() {
               <input type="number" min={1} max={6000} value={f.limite}
                 onChange={(e) => set('limite', Math.max(1, Math.min(Number(e.target.value) || 1, 6000)))}
                 className="w-24 rounded-md border border-zinc-300 px-2 py-1 text-sm outline-none focus:border-emerald-500" />
-              <span className="text-xs text-zinc-400">máx. 6000 por busca · acima de 1000 pagina e consome mais saldo</span>
+              <span className="text-xs text-zinc-400">
+                {fonte === 'gratis'
+                  ? 'fonte grátis: máx. 500 por busca'
+                  : 'máx. 6000 por busca · acima de 1000 pagina e consome mais saldo'}
+              </span>
             </div>
           </div>
-            </>
-          )}
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
-            <button onClick={buscar} disabled={!podeBuscar}
+            <button onClick={() => buscar()} disabled={!podeBuscar}
               className="rounded-lg bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40">
               {loading
-                ? fonte === 'brasilapi' ? 'Consultando…' : 'Buscando…'
-                : fonte === 'brasilapi' ? `Consultar ${cnpjsAlvo.length} CNPJ(s)` : `Buscar ${f.limite} leads`}
+                ? fonte === 'gratis' ? 'Buscando grátis…' : 'Buscando…'
+                : fonte === 'gratis' ? `Buscar grátis (até ${Math.min(f.limite, 500)})` : `Buscar ${f.limite} leads`}
             </button>
             {fonte === 'casa' && !hasKey && <span className="text-sm text-amber-600">Informe a chave da API primeiro.</span>}
             {fonte === 'casa' && semSaldo && <span className="text-sm text-red-600">Saldo zerado — recarregue no portal.</span>}
-            {fonte === 'brasilapi' && !cnpjsAlvo.length && <span className="text-sm text-amber-600">Cole ao menos um CNPJ.</span>}
+            {fonte === 'gratis' && <span className="text-xs text-zinc-400">grátis · sem saldo · pode levar alguns segundos</span>}
           </div>
         </section>
 
