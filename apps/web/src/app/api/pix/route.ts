@@ -1,3 +1,4 @@
+import QRCode from 'qrcode';
 import { createProvider, PixError, type PixChargeInput, type PixProvider } from '@/lib/pix';
 import { dbConfigured, getSettings } from '@/lib/db';
 
@@ -148,6 +149,15 @@ export async function POST(req: Request): Promise<Response> {
 
     const provider = await buildProvider();
     const charge = await provider.createCharge(input);
+
+    // Garante imagem do QR: se o gateway não devolveu o base64, gera do copia-e-cola.
+    if (!charge.qrImageBase64 && charge.copiaECola) {
+      try {
+        charge.qrImageBase64 = await QRCode.toDataURL(charge.copiaECola, { margin: 1, width: 256 });
+      } catch {
+        // sem imagem → o front ainda mostra o copia-e-cola
+      }
+    }
     return json(charge, 200, origin);
   } catch (e) {
     if (e instanceof PixError) {
