@@ -4,22 +4,23 @@ export const dynamic = 'force-dynamic';
 const COOKIE = 'panel_auth';
 
 export async function POST(req: Request) {
-  const esperada = process.env.PANEL_PASSWORD;
-  if (!esperada) return Response.json({ ok: true }); // sem senha configurada
+  const esperado = process.env.PANEL_PIN || process.env.PANEL_PASSWORD;
+  if (!esperado) return Response.json({ ok: true }); // sem PIN configurado
 
-  let senha = '';
+  let pin = '';
   try {
-    senha = (((await req.json()) as { senha?: unknown }).senha as string) || '';
+    const body = (await req.json()) as { pin?: unknown; senha?: unknown };
+    pin = String(body.pin ?? body.senha ?? '');
   } catch {
     return Response.json({ ok: false, error: 'Corpo inválido.' }, { status: 400 });
   }
 
-  if (senha !== esperada) {
-    return Response.json({ ok: false, error: 'Senha incorreta.' }, { status: 401 });
+  if (pin !== esperado) {
+    return Response.json({ ok: false, error: 'PIN incorreto.' }, { status: 401 });
   }
 
   const cookie = [
-    `${COOKIE}=${encodeURIComponent(esperada)}`,
+    `${COOKIE}=${encodeURIComponent(esperado)}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',

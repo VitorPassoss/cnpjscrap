@@ -161,8 +161,10 @@ export async function POST(req: Request): Promise<Response> {
     return json(charge, 200, origin);
   } catch (e) {
     if (e instanceof PixError) {
+      if (e.status >= 500) console.error(`[pix] POST ${e.status}: ${e.message}`, e.details ?? '');
       return json({ error: e.message, details: e.details }, e.status, origin);
     }
+    console.error('[pix] POST 502 (erro inesperado):', e);
     return json({ error: (e as Error).message || 'Falha ao gerar cobrança.' }, 502, origin);
   }
 }

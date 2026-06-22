@@ -1,25 +1,20 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 /**
- * Senha mestra do painel.
+ * PIN de acesso ao painel.
  * Protege a raiz `/` e as APIs do painel. Os links públicos (/l/<code>, /lead,
- * /cnpj/<cnpj>) e o /login ficam abertos. Se PANEL_PASSWORD não estiver
- * definida, não bloqueia.
+ * /cnpj/<cnpj>) e o /login ficam abertos. Configure `PANEL_PIN` (ou, por
+ * compatibilidade, `PANEL_PASSWORD`). Se nenhum estiver definido, não bloqueia.
  */
 
 export const COOKIE = 'panel_auth';
 
 export function middleware(req: NextRequest) {
-  const senha = process.env.PANEL_PASSWORD;
-  if (!senha) return NextResponse.next(); // sem senha configurada → tudo aberto
+  const pin = process.env.PANEL_PIN || process.env.PANEL_PASSWORD;
+  if (!pin) return NextResponse.next(); // sem PIN configurado → tudo aberto
 
   const cookie = req.cookies.get(COOKIE)?.value;
-  if (cookie === senha) return NextResponse.next();
-
-  const { pathname } = req.nextUrl;
-  if (pathname.startsWith('/api/')) {
-    return NextResponse.json({ error: 'Não autorizado.' }, { status: 401 });
-  }
+  if (cookie === pin) return NextResponse.next();
 
   const url = req.nextUrl.clone();
   url.pathname = '/login';
@@ -27,7 +22,8 @@ export function middleware(req: NextRequest) {
   return NextResponse.redirect(url);
 }
 
-// Protege tudo, exceto os links públicos, o login e os assets estáticos.
+// Protege APENAS a página raiz `/`. Tudo o mais (login, APIs, links públicos,
+// assets) fica aberto.
 export const config = {
-  matcher: ['/((?!l/|lead|cnpj/|login|api/login|_next/|favicon).*)'],
+  matcher: ['/'],
 };

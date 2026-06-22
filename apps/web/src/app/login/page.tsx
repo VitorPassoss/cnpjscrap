@@ -3,22 +3,22 @@
 import { useState } from 'react';
 
 export default function Login() {
-  const [senha, setSenha] = useState('');
+  const [pin, setPin] = useState('');
   const [erro, setErro] = useState('');
   const [carregando, setCarregando] = useState(false);
 
   const entrar = async () => {
-    if (!senha) return;
+    if (!pin) return;
     setCarregando(true);
     setErro('');
     try {
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ senha }),
+        body: JSON.stringify({ pin }),
       });
       const data = await res.json();
-      if (!res.ok || !data.ok) throw new Error(data.error || 'Senha incorreta.');
+      if (!res.ok || !data.ok) throw new Error(data.error || 'PIN incorreto.');
       window.location.href = '/';
     } catch (e) {
       setErro((e as Error).message);
@@ -37,22 +37,24 @@ export default function Login() {
           </div>
         </div>
 
-        <label className="mb-1 block text-sm font-medium text-zinc-700">Senha mestra</label>
+        <label className="mb-1 block text-sm font-medium text-zinc-700">PIN de acesso</label>
         <input
           type="password"
+          inputMode="numeric"
+          autoComplete="one-time-code"
           autoFocus
-          value={senha}
-          onChange={(e) => setSenha(e.target.value)}
+          value={pin}
+          onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
           onKeyDown={(e) => e.key === 'Enter' && entrar()}
-          placeholder="••••••••"
-          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          placeholder="••••"
+          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-center text-lg tracking-[0.5em] outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
         />
 
         {erro && <p className="mt-2 text-sm text-red-600">{erro}</p>}
 
         <button
           onClick={entrar}
-          disabled={!senha || carregando}
+          disabled={!pin || carregando}
           className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
         >
           {carregando ? 'Entrando…' : 'Entrar'}

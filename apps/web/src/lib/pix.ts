@@ -65,10 +65,31 @@ async function pixFetch(url: string, init: RequestInit, label: string): Promise<
     return await fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
   } catch (e) {
     const aborted = (e as Error)?.name === 'TimeoutError' || (e as Error)?.name === 'AbortError';
+    console.error(`[pix] ${label}: ${aborted ? 'timeout' : 'falha de rede'} → ${(e as Error)?.message}`);
     throw new PixError(
       aborted ? `${label}: gateway não respondeu a tempo.` : `${label}: falha de rede (${(e as Error).message}).`,
       504,
     );
+  }
+}
+
+/**
+ * Lê o corpo como JSON com tolerância. Gateways às vezes devolvem HTML/texto
+ * (página de erro própria, 502/504 do balanceador deles, corpo vazio). Em vez de
+ * estourar um "Unexpected token <" cru — que vira um 502 sem explicação — devolve
+ * {} e LOGA o corpo real, deixando o chamador decidir pelo status HTTP.
+ */
+async function readJson(res: Response, label: string): Promise<Record<string, unknown>> {
+  const text = await res.text().catch(() => '');
+  if (!text) {
+    if (!res.ok) console.error(`[pix] ${label}: corpo vazio (HTTP ${res.status})`);
+    return {};
+  }
+  try {
+    return asObj(JSON.parse(text));
+  } catch {
+    console.error(`[pix] ${label}: resposta não-JSON (HTTP ${res.status}): ${text.slice(0, 400)}`);
+    return {};
   }
 }
 
@@ -103,7 +124,7 @@ function mercadoPago(token: string): PixProvider {
           },
         }),
       }, 'Mercado Pago');
-      const data = asObj(await res.json());
+      const data = await readJson(res, 'Mercado Pago');
       if (!res.ok) {
         throw new PixError(String(data.message || 'Falha no Mercado Pago'), res.status, data);
       }
@@ -141,7 +162,7 @@ function asaas(token: string, base = 'https://api.asaas.com/v3'): PixProvider {
           ...(input.payerEmail ? { email: input.payerEmail } : {}),
         }),
       }, 'Asaas (cliente)');
-      const customer = asObj(await cRes.json());
+      const customer = await readJson(cRes, 'Asaas (cliente)');
       if (!cRes.ok) throw new PixError(firstError(customer, 'Falha ao criar cliente Asaas'), cRes.status, customer);
 
       const pRes = await pixFetch(`${base}/payments`, {
@@ -155,11 +176,11 @@ function asaas(token: string, base = 'https://api.asaas.com/v3'): PixProvider {
           description: input.description || 'Pagamento',
         }),
       }, 'Asaas (cobrança)');
-      const pay = asObj(await pRes.json());
+      const pay = await readJson(pRes, 'Asaas (cobrança)');
       if (!pRes.ok) throw new PixError(firstError(pay, 'Falha na cobrança Asaas'), pRes.status, pay);
 
       const qRes = await pixFetch(`${base}/payments/${pay.id}/pixQrCode`, { headers }, 'Asaas (QR)');
-      const qr = asObj(await qRes.json());
+      const qr = await readJson(qRes, 'Asaas (QR)');
       if (!qRes.ok) throw new PixError(firstError(qr, 'Falha ao gerar QR Asaas'), qRes.status, qr);
 
       return {
@@ -212,9 +233,12 @@ function paradise(token: string, productHash: string, upsellUrl?: string): PixPr
           },
         }),
       }, 'Paradise (transação)');
-      const data = asObj(await res.json());
+      const data = await readJson(res, 'Paradise (transação)');
       if (!res.ok || data.status === 'error') {
-        throw new PixError(String(data.message || data.error || 'Falha na Paradise'), res.status || 502, data);
+        const msg = String(data.message || data.error || 'Falha na Paradise');
+        console.error(`[pix] Paradise (transação) recusou (HTTP ${res.status}): ${msg}`);
+        // res.ok com status:"error" no corpo → 502 (gateway recusou), nunca 200.
+        throw new PixError(msg, res.ok ? 502 : res.status, data);
       }
 
       const copiaECola = String(data.qr_code ?? '');
@@ -238,7 +262,7 @@ function paradise(token: string, productHash: string, upsellUrl?: string): PixPr
         { headers: { 'X-API-Key': token } },
         'Paradise (status)',
       );
-      const data = asObj(await res.json());
+      const data = await readJson(res, 'Paradise (status)');
       if (!res.ok) {
         throw new PixError(String(data.message || data.error || 'Falha ao consultar status'), res.status, data);
       }
