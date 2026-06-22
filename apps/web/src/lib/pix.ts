@@ -178,51 +178,11 @@ function asaas(token: string, base = 'https://api.asaas.com/v3'): PixProvider {
 // status: GET  /api/v1/check_status.php?hash=<external_id>
 // Exige TODOS os dados reais do comprador — nada é gerado/fabricado aqui.
 
-/** Lê o primeiro valor não-vazio dentre vários caminhos (suporta "a.b.c"). */
-function firstStr(obj: Record<string, unknown>, paths: string[]): string {
-  for (const path of paths) {
-    let cur: unknown = obj;
-    for (const part of path.split('.')) {
-      cur = asObj(cur)[part];
-      if (cur == null) break;
-    }
-    if (cur != null && cur !== '') return String(cur);
-  }
-  return '';
-}
-
-/** Cache do productHash resolvido automaticamente, por token. */
-const paradiseHashCache = new Map<string, string>();
-
-/** Resolve o productHash automaticamente: pega o primeiro produto da conta. */
-async function resolveParadiseProductHash(base: string, token: string): Promise<string> {
-  const cached = paradiseHashCache.get(token);
-  if (cached) return cached;
-
-  const res = await pixFetch(`${base}/products`, { headers: { 'X-API-Key': token } }, 'Paradise (produtos)');
-  const data = await res.json();
-  if (!res.ok) {
-    throw new PixError('Não foi possível listar produtos da Paradise (productHash automático).', res.status, data);
-  }
-  const list: unknown[] = Array.isArray(data)
-    ? data
-    : (asObj(data).data as unknown[]) || (asObj(data).products as unknown[]) || [];
-  const first = asObj(list[0]);
-  const hash = firstStr(first, ['hash', 'product_hash', 'productHash', 'id', 'uuid']);
-  if (!hash) {
-    throw new PixError('Nenhum produto encontrado na Paradise para resolver o productHash.', 502, data);
-  }
-  paradiseHashCache.set(token, hash);
-  return hash;
-}
-
 function paradise(token: string, productHash: string, upsellUrl?: string): PixProvider {
   const base = 'https://multi.paradisepags.com/api/v1';
+  const headers = { 'Content-Type': 'application/json', 'X-API-Key': token };
   return {
     async createCharge(input) {
-      // productHash vazio → resolve automaticamente pela API da Paradise.
-      const hash = productHash || (await resolveParadiseProductHash(base, token));
-
       // Dados reais do pagador são obrigatórios — sem CPF/e-mail fabricado.
       const need: [keyof PixChargeInput, string][] = [
         ['payerName', 'nome'],
@@ -235,12 +195,15 @@ function paradise(token: string, productHash: string, upsellUrl?: string): PixPr
         throw new PixError(`Dados do pagador obrigatórios: ${missing.join(', ')}.`, 400);
       }
 
-      const res = await pixFetch(`${base}/transaction`, {
+      const res = await pixFetch(`${base}/transaction.php`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': token },
+        headers,
         body: JSON.stringify({
           amount: Math.round(input.amount * 100), // Paradise usa centavos
-          productHash: hash,
+          description: input.description || 'Pagamento',
+          reference: crypto.randomUUID(), // identificador único obrigatório
+          // Sem productHash → source 'api_externa' dispensa o cadastro do produto.
+          ...(productHash ? { productHash } : { source: 'api_externa' }),
           customer: {
             name: input.payerName,
             email: input.payerEmail,
@@ -250,51 +213,39 @@ function paradise(token: string, productHash: string, upsellUrl?: string): PixPr
         }),
       }, 'Paradise (transação)');
       const data = asObj(await res.json());
-      if (!res.ok) {
-        throw new PixError(String(data.message || data.error || 'Falha na Paradise'), res.status, data);
+      if (!res.ok || data.status === 'error') {
+        throw new PixError(String(data.message || data.error || 'Falha na Paradise'), res.status || 502, data);
       }
 
-      // Os nomes exatos dos campos variam conforme a conta/versão da Paradise;
-      // por isso tentamos os mais comuns. Ajuste a lista se o seu retorno diferir.
-      const copiaECola = firstStr(data, [
-        'qr_code', 'qrcode', 'pix_qr_code', 'pixCode', 'copy_paste', 'copyPaste', 'emv',
-        'pix.qrcode', 'pix.copy_paste', 'transaction.qr_code', 'data.qr_code',
-      ]);
-      const qrImg = firstStr(data, [
-        'qr_code_base64', 'qrcode_base64', 'qrCodeImage', 'pix.qrcode_base64', 'data.qr_code_base64',
-      ]);
-      const txid = firstStr(data, [
-        'hash', 'external_id', 'externalId', 'id', 'transaction.id', 'transaction.hash', 'data.hash',
-      ]);
-
+      const copiaECola = String(data.qr_code ?? '');
       if (!copiaECola) {
-        throw new PixError('Paradise não retornou o código Pix (ajuste os campos em firstStr).', 502, data);
+        throw new PixError('Paradise não retornou o código Pix.', 502, data);
       }
+      const qrImg = String(data.qr_code_base64 ?? '');
       return {
-        txid,
+        // transaction_id (ID interno) é o usado na consulta de status.
+        txid: String(data.transaction_id ?? data.id ?? ''),
         copiaECola,
-        qrImageBase64: qrImg
-          ? qrImg.startsWith('data:')
-            ? qrImg
-            : `data:image/png;base64,${qrImg}`
-          : undefined,
-        amount: input.amount,
-        status: firstStr(data, ['status', 'transaction.status']) || 'pending',
+        qrImageBase64: qrImg ? (qrImg.startsWith('data:') ? qrImg : `data:image/png;base64,${qrImg}`) : undefined,
+        amount: Number(data.amount ?? Math.round(input.amount * 100)) / 100,
+        status: 'pending',
       };
     },
 
     async checkStatus(txid) {
-      const res = await pixFetch(`${base}/check_status.php?hash=${encodeURIComponent(txid)}`, {
-        headers: { 'X-API-Key': token },
-      }, 'Paradise (status)');
+      const res = await pixFetch(
+        `${base}/query.php?action=get_transaction&id=${encodeURIComponent(txid)}`,
+        { headers: { 'X-API-Key': token } },
+        'Paradise (status)',
+      );
       const data = asObj(await res.json());
       if (!res.ok) {
         throw new PixError(String(data.message || data.error || 'Falha ao consultar status'), res.status, data);
       }
       const raw = String(data.status ?? '').toLowerCase();
-      const paid = raw === 'paid' || raw === 'approved' || data.paid === true;
+      const paid = raw === 'approved';
       return {
-        status: paid ? 'paid' : raw || 'pending',
+        status: raw || 'pending',
         paid,
         // URL de destino fica no servidor e só sai depois de pago.
         redirectUrl: paid ? upsellUrl || undefined : undefined,
