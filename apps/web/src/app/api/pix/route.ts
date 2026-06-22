@@ -1,7 +1,38 @@
-import { PixError, resolveProvider, type PixChargeInput } from '@/lib/pix';
+import { createProvider, PixError, type PixChargeInput, type PixProvider } from '@/lib/pix';
+import { dbConfigured, getSettings } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/**
+ * Monta o provider a partir da config salva no painel (banco). Cai pro env
+ * (PIX_PROVIDER/PIX_TOKEN/…) como fallback de dev quando não há nada no banco.
+ */
+async function buildProvider(): Promise<PixProvider> {
+  if (dbConfigured()) {
+    try {
+      const { pix } = await getSettings();
+      if (pix.provider && pix.token) {
+        return createProvider({
+          provider: pix.provider,
+          token: pix.token,
+          productHash: pix.productHash,
+          upsellUrl: pix.upsellUrl,
+          asaasBase: process.env.PIX_ASAAS_BASE,
+        });
+      }
+    } catch {
+      // banco indisponível → tenta env abaixo
+    }
+  }
+  return createProvider({
+    provider: process.env.PIX_PROVIDER || '',
+    token: process.env.PIX_TOKEN || '',
+    productHash: process.env.PARADISE_PRODUCT_HASH || '',
+    upsellUrl: process.env.PARADISE_UPSELL_URL || '',
+    asaasBase: process.env.PIX_ASAAS_BASE,
+  });
+}
 
 /**
  * Proxy de cobrança Pix. O template (em qualquer host) faz:
@@ -56,7 +87,7 @@ export async function POST(req: Request): Promise<Response> {
     if (str(body.action) === 'status') {
       const txid = str(body.txid);
       if (!txid) return json({ error: 'txid obrigatório para status.' }, 400, origin);
-      const provider = resolveProvider();
+      const provider = await buildProvider();
       if (!provider.checkStatus) {
         return json({ error: 'Este gateway não suporta consulta de status.' }, 400, origin);
       }
@@ -76,7 +107,8 @@ export async function POST(req: Request): Promise<Response> {
       payerPhone: str(body.payerPhone)?.replace(/\D/g, ''),
     };
 
-    const charge = await resolveProvider().createCharge(input);
+    const provider = await buildProvider();
+    const charge = await provider.createCharge(input);
     return json(charge, 200, origin);
   } catch (e) {
     if (e instanceof PixError) {

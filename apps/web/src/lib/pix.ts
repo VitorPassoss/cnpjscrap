@@ -5,12 +5,9 @@
  * independente do gateway. A credencial fica só no servidor (env), nunca no
  * navegador — resolve o CORS e o vazamento de chave de uma vez.
  *
- * Configuração (env):
- *   PIX_PROVIDER = mercadopago | asaas | paradise
- *   PIX_TOKEN    = access token / api key do gateway
- *   PIX_ASAAS_BASE (opcional) = https://sandbox.asaas.com/api/v3 p/ testes
- *   PARADISE_PRODUCT_HASH = hash do produto (obrigatório p/ paradise)
- *   PARADISE_UPSELL_URL (opcional) = destino devolvido SÓ após pagar
+ * A config (provider, token, productHash, upsellUrl) vem do painel (banco),
+ * via createProvider(cfg). O token nunca trafega de volta pro navegador.
+ * Para a Paradise, productHash vazio é resolvido automaticamente pela API.
  */
 
 // ───────────────────────── formatos normalizados ─────────────────────────
@@ -178,11 +175,37 @@ function firstStr(obj: Record<string, unknown>, paths: string[]): string {
   return '';
 }
 
-function paradise(token: string, productHash: string): PixProvider {
+/** Cache do productHash resolvido automaticamente, por token. */
+const paradiseHashCache = new Map<string, string>();
+
+/** Resolve o productHash automaticamente: pega o primeiro produto da conta. */
+async function resolveParadiseProductHash(base: string, token: string): Promise<string> {
+  const cached = paradiseHashCache.get(token);
+  if (cached) return cached;
+
+  const res = await fetch(`${base}/products`, { headers: { 'X-API-Key': token } });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new PixError('Não foi possível listar produtos da Paradise (productHash automático).', res.status, data);
+  }
+  const list: unknown[] = Array.isArray(data)
+    ? data
+    : (asObj(data).data as unknown[]) || (asObj(data).products as unknown[]) || [];
+  const first = asObj(list[0]);
+  const hash = firstStr(first, ['hash', 'product_hash', 'productHash', 'id', 'uuid']);
+  if (!hash) {
+    throw new PixError('Nenhum produto encontrado na Paradise para resolver o productHash.', 502, data);
+  }
+  paradiseHashCache.set(token, hash);
+  return hash;
+}
+
+function paradise(token: string, productHash: string, upsellUrl?: string): PixProvider {
   const base = 'https://multi.paradisepags.com/api/v1';
   return {
     async createCharge(input) {
-      if (!productHash) throw new PixError('PARADISE_PRODUCT_HASH não configurado.', 500);
+      // productHash vazio → resolve automaticamente pela API da Paradise.
+      const hash = productHash || (await resolveParadiseProductHash(base, token));
 
       // Dados reais do pagador são obrigatórios — sem CPF/e-mail fabricado.
       const need: [keyof PixChargeInput, string][] = [
@@ -201,7 +224,7 @@ function paradise(token: string, productHash: string): PixProvider {
         headers: { 'Content-Type': 'application/json', 'X-API-Key': token },
         body: JSON.stringify({
           amount: Math.round(input.amount * 100), // Paradise usa centavos
-          productHash,
+          productHash: hash,
           customer: {
             name: input.payerName,
             email: input.payerEmail,
@@ -258,31 +281,39 @@ function paradise(token: string, productHash: string): PixProvider {
         status: paid ? 'paid' : raw || 'pending',
         paid,
         // URL de destino fica no servidor e só sai depois de pago.
-        redirectUrl: paid ? process.env.PARADISE_UPSELL_URL || undefined : undefined,
+        redirectUrl: paid ? upsellUrl || undefined : undefined,
       };
     },
   };
 }
 
-// ───────────────────────── seleção via env ─────────────────────────
+// ───────────────────────── seleção via config (painel) ─────────────────────────
 
-/** Monta o provider conforme PIX_PROVIDER/PIX_TOKEN. Lança PixError se faltar config. */
-export function resolveProvider(): PixProvider {
-  const name = (process.env.PIX_PROVIDER || '').toLowerCase().trim();
-  const token = process.env.PIX_TOKEN || '';
-  if (!name) throw new PixError('PIX_PROVIDER não configurado (mercadopago | asaas).', 500);
-  if (!token) throw new PixError('PIX_TOKEN não configurado.', 500);
+export interface PixProviderConfig {
+  provider: string; // mercadopago | asaas | paradise
+  token: string;
+  productHash?: string; // paradise; vazio = automático
+  upsellUrl?: string; // paradise; destino pós-pagamento
+  asaasBase?: string; // opcional (sandbox)
+}
+
+/** Monta o provider a partir da config salva no painel. Lança PixError se faltar config. */
+export function createProvider(cfg: PixProviderConfig): PixProvider {
+  const name = (cfg.provider || '').toLowerCase().trim();
+  const token = cfg.token || '';
+  if (!name) throw new PixError('Gateway Pix não configurado no painel.', 500);
+  if (!token) throw new PixError('Token do gateway não configurado no painel.', 500);
 
   switch (name) {
     case 'mercadopago':
     case 'mp':
       return mercadoPago(token);
     case 'asaas':
-      return asaas(token, process.env.PIX_ASAAS_BASE || undefined);
+      return asaas(token, cfg.asaasBase);
     case 'paradise':
     case 'paradisepags':
-      return paradise(token, process.env.PARADISE_PRODUCT_HASH || '');
+      return paradise(token, cfg.productHash || '', cfg.upsellUrl);
     default:
-      throw new PixError(`PIX_PROVIDER inválido: "${name}". Use mercadopago, asaas ou paradise.`, 500);
+      throw new PixError(`Gateway inválido: "${name}". Use mercadopago, asaas ou paradise.`, 500);
   }
 }

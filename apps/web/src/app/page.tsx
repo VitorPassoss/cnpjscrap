@@ -133,6 +133,15 @@ export default function Painel() {
   const [disparoMsg, setDisparoMsg] = useState(DEFAULT_DISPARO_MSG);
   const [gerandoTodos, setGerandoTodos] = useState(false);
 
+  // config do gateway Pix (salva no banco; token não volta pro front)
+  const [pixProvider, setPixProvider] = useState('');
+  const [pixToken, setPixToken] = useState('');
+  const [pixHasToken, setPixHasToken] = useState(false);
+  const [pixTokenLast4, setPixTokenLast4] = useState('');
+  const [pixProductHash, setPixProductHash] = useState('');
+  const [pixUpsellUrl, setPixUpsellUrl] = useState('');
+  const [pixStatus, setPixStatus] = useState<'' | 'salvando' | 'salvo' | 'erro'>('');
+
   // histórico de buscas + memória de CNPJs já vistos (localStorage)
   const [historico, setHistorico] = useState<BuscaHist[]>([]);
   const [duplicados, setDuplicados] = useState<Set<string>>(new Set());
@@ -171,6 +180,13 @@ export default function Painel() {
           setActiveId(data.activeTemplateId || data.templates[0].id);
         }
         if (typeof data.disparoMsg === 'string' && data.disparoMsg) setDisparoMsg(data.disparoMsg);
+        if (data.pix) {
+          setPixProvider(data.pix.provider || '');
+          setPixHasToken(!!data.pix.hasToken);
+          setPixTokenLast4(data.pix.tokenLast4 || '');
+          setPixProductHash(data.pix.productHash || '');
+          setPixUpsellUrl(data.pix.upsellUrl || '');
+        }
         if (data.hasKey) {
           setEditandoKey(false);
           carregarSaldo();
@@ -365,6 +381,36 @@ export default function Painel() {
     }
   };
 
+  const salvarPix = async () => {
+    setPixStatus('salvando');
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pix: {
+            provider: pixProvider,
+            ...(pixToken.trim() ? { token: pixToken.trim() } : {}), // só envia se digitou
+            productHash: pixProductHash,
+            upsellUrl: pixUpsellUrl,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao salvar Pix');
+      if (data.pix) {
+        setPixHasToken(!!data.pix.hasToken);
+        setPixTokenLast4(data.pix.tokenLast4 || '');
+      }
+      setPixToken('');
+      setPixStatus('salvo');
+      setTimeout(() => setPixStatus((s) => (s === 'salvo' ? '' : s)), 2000);
+    } catch (e) {
+      setPixStatus('erro');
+      setErro((e as Error).message);
+    }
+  };
+
   const buscar = async (override?: Partial<Filtros>) => {
     // override permite disparar a busca já com filtros novos (ex.: atalhos de data),
     // sem esperar o re-render do estado. Reflete o override no painel também.
@@ -530,6 +576,53 @@ export default function Painel() {
               <button onClick={() => setEditandoKey(true)} className="text-sm text-zinc-500 underline hover:text-zinc-700">trocar</button>
             </div>
           )}
+        </section>
+
+        {/* Gateway Pix */}
+        <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-zinc-900">Gateway Pix</h2>
+            <span className="text-xs text-zinc-400">
+              {pixStatus === 'salvando' ? 'salvando…' : pixStatus === 'salvo' ? 'salvo ✓' : pixStatus === 'erro' ? 'erro ao salvar' : ''}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Campo label="Gateway">
+              <select value={pixProvider} onChange={(e) => setPixProvider(e.target.value)} className={inp}>
+                <option value="">— selecione —</option>
+                <option value="paradise">Paradise Pag</option>
+                <option value="mercadopago">Mercado Pago</option>
+                <option value="asaas">Asaas</option>
+              </select>
+            </Campo>
+            <Campo label={pixHasToken ? `Token / API Key (salvo ••••${pixTokenLast4})` : 'Token / API Key'}>
+              <input type="password" value={pixToken} onChange={(e) => setPixToken(e.target.value)}
+                placeholder={pixHasToken ? 'deixe em branco pra manter' : 'cole a chave do gateway'}
+                onKeyDown={(e) => e.key === 'Enter' && salvarPix()} className={inp} />
+            </Campo>
+            {(pixProvider === 'paradise' || pixProvider === 'paradisepags') && (
+              <>
+                <Campo label="Product hash (Paradise)">
+                  <input value={pixProductHash} onChange={(e) => setPixProductHash(e.target.value)}
+                    placeholder="deixe vazio = automático (puxa da Paradise)" className={inp} />
+                </Campo>
+                <Campo label="URL de destino pós-pagamento (opcional)">
+                  <input value={pixUpsellUrl} onChange={(e) => setPixUpsellUrl(e.target.value)}
+                    placeholder="https://… (página de obrigado/entrega)" className={inp} />
+                </Campo>
+              </>
+            )}
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            <button onClick={salvarPix} disabled={!pixProvider || pixStatus === 'salvando'}
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-40">
+              {pixStatus === 'salvando' ? 'Salvando…' : 'Salvar Pix'}
+            </button>
+            <p className="text-xs text-zinc-500">
+              Token fica no servidor — o template chama <span className="font-mono">/api/pix</span> e nunca vê a chave.
+              {!dbReady && ' (configure DATABASE_URL pra salvar de forma persistente.)'}
+            </p>
+          </div>
         </section>
 
         {/* Últimas buscas + memória de duplicados */}

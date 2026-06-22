@@ -14,12 +14,23 @@ export interface TemplateItem {
   html: string;
 }
 
+/** Config do gateway Pix (salva no painel; token é segredo, não volta pro front). */
+export interface PixSettings {
+  provider: string; // '' | mercadopago | asaas | paradise
+  token: string;
+  productHash: string; // paradise; '' = resolve automático pela API
+  upsellUrl: string; // destino devolvido só após o pagamento
+}
+
+export const EMPTY_PIX: PixSettings = { provider: '', token: '', productHash: '', upsellUrl: '' };
+
 export interface Settings {
   apiKey: string;
   template: string;
   disparoMsg: string;
   templates: TemplateItem[];
   activeTemplateId: string;
+  pix: PixSettings;
 }
 
 export function dbConfigured(): boolean {
@@ -59,6 +70,7 @@ function ensureTable(): Promise<void> {
          ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS disparo_msg TEXT NOT NULL DEFAULT '';
          ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS templates JSONB NOT NULL DEFAULT '[]'::jsonb;
          ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS active_template_id TEXT NOT NULL DEFAULT '';
+         ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS pix_config JSONB NOT NULL DEFAULT '{}'::jsonb;
          CREATE TABLE IF NOT EXISTS lead_links (
            code       TEXT PRIMARY KEY,
            payload    JSONB NOT NULL,
@@ -82,14 +94,24 @@ export async function getSettings(): Promise<Settings> {
     disparo_msg: string;
     templates: TemplateItem[] | null;
     active_template_id: string;
-  }>('SELECT api_key, template, disparo_msg, templates, active_template_id FROM app_settings WHERE id = 1');
+    pix_config: Partial<PixSettings> | null;
+  }>(
+    'SELECT api_key, template, disparo_msg, templates, active_template_id, pix_config FROM app_settings WHERE id = 1',
+  );
   const row = r.rows[0];
+  const pix = row?.pix_config && typeof row.pix_config === 'object' ? row.pix_config : {};
   return {
     apiKey: row?.api_key ?? '',
     template: row?.template ?? '',
     disparoMsg: row?.disparo_msg ?? '',
     templates: Array.isArray(row?.templates) ? row!.templates : [],
     activeTemplateId: row?.active_template_id ?? '',
+    pix: {
+      provider: pix.provider ?? '',
+      token: pix.token ?? '',
+      productHash: pix.productHash ?? '',
+      upsellUrl: pix.upsellUrl ?? '',
+    },
   };
 }
 
@@ -103,6 +125,7 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
             disparo_msg        = COALESCE($3, disparo_msg),
             templates          = COALESCE($4::jsonb, templates),
             active_template_id = COALESCE($5, active_template_id),
+            pix_config         = COALESCE($6::jsonb, pix_config),
             updated_at         = now()
       WHERE id = 1`,
     [
@@ -111,6 +134,7 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
       patch.disparoMsg ?? null,
       patch.templates ? JSON.stringify(patch.templates) : null,
       patch.activeTemplateId ?? null,
+      patch.pix ? JSON.stringify(patch.pix) : null,
     ],
   );
   return getSettings();

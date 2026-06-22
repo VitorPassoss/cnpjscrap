@@ -1,4 +1,4 @@
-import { dbConfigured, getSettings, saveSettings, type Settings, type TemplateItem } from '@/lib/db';
+import { dbConfigured, EMPTY_PIX, getSettings, saveSettings, type PixSettings, type Settings, type TemplateItem } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -12,6 +12,7 @@ function publicShape(s: Settings, dbReady: boolean) {
   }
   let activeTemplateId = s.activeTemplateId ?? '';
   if (!activeTemplateId && templates[0]) activeTemplateId = templates[0].id;
+  const pix = s.pix ?? EMPTY_PIX;
   return {
     hasKey: !!s.apiKey,
     keyLast4: s.apiKey.slice(-4),
@@ -20,6 +21,14 @@ function publicShape(s: Settings, dbReady: boolean) {
     templates,
     activeTemplateId,
     dbReady,
+    // Config Pix sem expor o token — só se existe e os 4 últimos.
+    pix: {
+      provider: pix.provider,
+      hasToken: !!pix.token,
+      tokenLast4: pix.token.slice(-4),
+      productHash: pix.productHash,
+      upsellUrl: pix.upsellUrl,
+    },
   };
 }
 
@@ -27,7 +36,10 @@ export async function GET() {
   if (!dbConfigured()) {
     const envKey = process.env.CASADOSDADOS_API_KEY || '';
     return Response.json(
-      publicShape({ apiKey: envKey, template: '', disparoMsg: '', templates: [], activeTemplateId: '' }, false),
+      publicShape(
+        { apiKey: envKey, template: '', disparoMsg: '', templates: [], activeTemplateId: '', pix: EMPTY_PIX },
+        false,
+      ),
     );
   }
   try {
@@ -48,6 +60,7 @@ export async function POST(req: Request) {
     disparoMsg?: unknown;
     templates?: unknown;
     activeTemplateId?: unknown;
+    pix?: unknown;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -72,6 +85,21 @@ export async function POST(req: Request) {
       .map((t) => ({ id: t.id, name: t.name, html: t.html }));
   }
   if (typeof body.activeTemplateId === 'string') patch.activeTemplateId = body.activeTemplateId;
+
+  // Pix: faz merge com o que já está salvo. Token só é sobrescrito se vier
+  // preenchido (assim salvar provider/upsell não apaga a chave existente).
+  if (body.pix && typeof body.pix === 'object') {
+    const p = body.pix as Record<string, unknown>;
+    const cur = (await getSettings()).pix;
+    const s = (v: unknown, fallback: string) => (typeof v === 'string' ? v.trim() : fallback);
+    const next: PixSettings = {
+      provider: s(p.provider, cur.provider),
+      token: p.token && typeof p.token === 'string' && p.token.trim() ? p.token.trim() : cur.token,
+      productHash: s(p.productHash, cur.productHash),
+      upsellUrl: s(p.upsellUrl, cur.upsellUrl),
+    };
+    patch.pix = next;
+  }
 
   if (!Object.keys(patch).length) {
     return Response.json({ error: 'Nada para salvar.' }, { status: 400 });
