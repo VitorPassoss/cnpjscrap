@@ -71,6 +71,32 @@ export function OPTIONS(req: Request): Response {
   return new Response(null, { status: 204, headers: corsHeaders(req.headers.get('origin')) });
 }
 
+/** Diagnóstico: abra /api/pix no navegador pra ver se a rota está no ar e configurada. */
+export async function GET(req: Request): Promise<Response> {
+  const origin = req.headers.get('origin');
+  let provider = '';
+  let configured = false;
+  let source = 'nenhuma';
+  try {
+    if (dbConfigured()) {
+      const { pix } = await getSettings();
+      if (pix.provider) {
+        provider = pix.provider;
+        configured = !!pix.token;
+        source = 'painel';
+      }
+    }
+    if (!provider && process.env.PIX_PROVIDER) {
+      provider = process.env.PIX_PROVIDER;
+      configured = !!process.env.PIX_TOKEN;
+      source = 'env';
+    }
+  } catch (e) {
+    return json({ ok: false, error: `Falha ao ler config: ${(e as Error).message}` }, 200, origin);
+  }
+  return json({ ok: true, route: 'alive', provider, configured, source }, 200, origin);
+}
+
 export async function POST(req: Request): Promise<Response> {
   const origin = req.headers.get('origin');
   let body: Record<string, unknown>;

@@ -56,13 +56,29 @@ export class PixError extends Error {
 const asObj = (v: unknown): Record<string, unknown> =>
   v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
 
+/** Timeout (ms) das chamadas a gateways — evita request pendurada virar 502. */
+const FETCH_TIMEOUT = 15_000;
+
+/** fetch com timeout; converte "travou/sem resposta" em PixError legível. */
+async function pixFetch(url: string, init: RequestInit, label: string): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+  } catch (e) {
+    const aborted = (e as Error)?.name === 'TimeoutError' || (e as Error)?.name === 'AbortError';
+    throw new PixError(
+      aborted ? `${label}: gateway não respondeu a tempo.` : `${label}: falha de rede (${(e as Error).message}).`,
+      504,
+    );
+  }
+}
+
 // ───────────────────────── Mercado Pago ─────────────────────────
 // Cobrança Pix em uma chamada: POST /v1/payments (payment_method_id: 'pix').
 
 function mercadoPago(token: string): PixProvider {
   return {
     async createCharge(input) {
-      const res = await fetch('https://api.mercadopago.com/v1/payments', {
+      const res = await pixFetch('https://api.mercadopago.com/v1/payments', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -86,7 +102,7 @@ function mercadoPago(token: string): PixProvider {
               : {}),
           },
         }),
-      });
+      }, 'Mercado Pago');
       const data = asObj(await res.json());
       if (!res.ok) {
         throw new PixError(String(data.message || 'Falha no Mercado Pago'), res.status, data);
@@ -116,7 +132,7 @@ function asaas(token: string, base = 'https://api.asaas.com/v3'): PixProvider {
 
   return {
     async createCharge(input) {
-      const cRes = await fetch(`${base}/customers`, {
+      const cRes = await pixFetch(`${base}/customers`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -124,11 +140,11 @@ function asaas(token: string, base = 'https://api.asaas.com/v3'): PixProvider {
           ...(input.payerDoc ? { cpfCnpj: input.payerDoc } : {}),
           ...(input.payerEmail ? { email: input.payerEmail } : {}),
         }),
-      });
+      }, 'Asaas (cliente)');
       const customer = asObj(await cRes.json());
       if (!cRes.ok) throw new PixError(firstError(customer, 'Falha ao criar cliente Asaas'), cRes.status, customer);
 
-      const pRes = await fetch(`${base}/payments`, {
+      const pRes = await pixFetch(`${base}/payments`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -138,11 +154,11 @@ function asaas(token: string, base = 'https://api.asaas.com/v3'): PixProvider {
           dueDate,
           description: input.description || 'Pagamento',
         }),
-      });
+      }, 'Asaas (cobrança)');
       const pay = asObj(await pRes.json());
       if (!pRes.ok) throw new PixError(firstError(pay, 'Falha na cobrança Asaas'), pRes.status, pay);
 
-      const qRes = await fetch(`${base}/payments/${pay.id}/pixQrCode`, { headers });
+      const qRes = await pixFetch(`${base}/payments/${pay.id}/pixQrCode`, { headers }, 'Asaas (QR)');
       const qr = asObj(await qRes.json());
       if (!qRes.ok) throw new PixError(firstError(qr, 'Falha ao gerar QR Asaas'), qRes.status, qr);
 
@@ -183,7 +199,7 @@ async function resolveParadiseProductHash(base: string, token: string): Promise<
   const cached = paradiseHashCache.get(token);
   if (cached) return cached;
 
-  const res = await fetch(`${base}/products`, { headers: { 'X-API-Key': token } });
+  const res = await pixFetch(`${base}/products`, { headers: { 'X-API-Key': token } }, 'Paradise (produtos)');
   const data = await res.json();
   if (!res.ok) {
     throw new PixError('Não foi possível listar produtos da Paradise (productHash automático).', res.status, data);
@@ -219,7 +235,7 @@ function paradise(token: string, productHash: string, upsellUrl?: string): PixPr
         throw new PixError(`Dados do pagador obrigatórios: ${missing.join(', ')}.`, 400);
       }
 
-      const res = await fetch(`${base}/transaction`, {
+      const res = await pixFetch(`${base}/transaction`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': token },
         body: JSON.stringify({
@@ -232,7 +248,7 @@ function paradise(token: string, productHash: string, upsellUrl?: string): PixPr
             phone: input.payerPhone,
           },
         }),
-      });
+      }, 'Paradise (transação)');
       const data = asObj(await res.json());
       if (!res.ok) {
         throw new PixError(String(data.message || data.error || 'Falha na Paradise'), res.status, data);
@@ -268,9 +284,9 @@ function paradise(token: string, productHash: string, upsellUrl?: string): PixPr
     },
 
     async checkStatus(txid) {
-      const res = await fetch(`${base}/check_status.php?hash=${encodeURIComponent(txid)}`, {
+      const res = await pixFetch(`${base}/check_status.php?hash=${encodeURIComponent(txid)}`, {
         headers: { 'X-API-Key': token },
-      });
+      }, 'Paradise (status)');
       const data = asObj(await res.json());
       if (!res.ok) {
         throw new PixError(String(data.message || data.error || 'Falha ao consultar status'), res.status, data);
