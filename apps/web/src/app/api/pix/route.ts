@@ -4,34 +4,57 @@ import { dbConfigured, getSettings } from '@/lib/db';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/**
- * Monta o provider a partir da config salva no painel (banco). Cai pro env
- * (PIX_PROVIDER/PIX_TOKEN/…) como fallback de dev quando não há nada no banco.
- */
-async function buildProvider(): Promise<PixProvider> {
+/** Promise com teto de tempo — evita uma leitura de banco pendurada virar 502. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
+  ]);
+}
+
+interface CfgShape {
+  provider: string;
+  token: string;
+  productHash: string;
+  upsellUrl: string;
+  asaasBase?: string;
+}
+
+// Cache curto da config (o polling chama isto a cada poucos segundos; sem cache
+// cada chamada bate no banco e pode pendurar/atrasar a resposta).
+let cfgCache: { cfg: CfgShape; at: number } | null = null;
+const CFG_TTL = 30_000;
+
+async function loadConfig(): Promise<CfgShape> {
+  if (cfgCache && Date.now() - cfgCache.at < CFG_TTL) return cfgCache.cfg;
+
+  let cfg: CfgShape = { provider: '', token: '', productHash: '', upsellUrl: '' };
   if (dbConfigured()) {
     try {
-      const { pix } = await getSettings();
+      const { pix } = await withTimeout(getSettings(), 5000);
       if (pix.provider && pix.token) {
-        return createProvider({
-          provider: pix.provider,
-          token: pix.token,
-          productHash: pix.productHash,
-          upsellUrl: pix.upsellUrl,
-          asaasBase: process.env.PIX_ASAAS_BASE,
-        });
+        cfg = { provider: pix.provider, token: pix.token, productHash: pix.productHash, upsellUrl: pix.upsellUrl };
       }
     } catch {
-      // banco indisponível → tenta env abaixo
+      // banco lento/indisponível → cai no env abaixo
     }
   }
-  return createProvider({
-    provider: process.env.PIX_PROVIDER || '',
-    token: process.env.PIX_TOKEN || '',
-    productHash: process.env.PARADISE_PRODUCT_HASH || '',
-    upsellUrl: process.env.PARADISE_UPSELL_URL || '',
-    asaasBase: process.env.PIX_ASAAS_BASE,
-  });
+  if (!cfg.provider || !cfg.token) {
+    cfg = {
+      provider: process.env.PIX_PROVIDER || '',
+      token: process.env.PIX_TOKEN || '',
+      productHash: process.env.PARADISE_PRODUCT_HASH || '',
+      upsellUrl: process.env.PARADISE_UPSELL_URL || '',
+    };
+  }
+  cfg.asaasBase = process.env.PIX_ASAAS_BASE;
+  if (cfg.provider && cfg.token) cfgCache = { cfg, at: Date.now() }; // só cacheia config válida
+  return cfg;
+}
+
+/** Monta o provider a partir da config (painel → env), com cache. */
+async function buildProvider(): Promise<PixProvider> {
+  return createProvider(await loadConfig());
 }
 
 /**
@@ -54,8 +77,9 @@ function corsHeaders(origin: string | null): Record<string, string> {
   }
   return {
     'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '86400', // cacheia o preflight 24h (menos OPTIONS no polling)
     Vary: 'Origin',
   };
 }
@@ -74,27 +98,16 @@ export function OPTIONS(req: Request): Response {
 /** Diagnóstico: abra /api/pix no navegador pra ver se a rota está no ar e configurada. */
 export async function GET(req: Request): Promise<Response> {
   const origin = req.headers.get('origin');
-  let provider = '';
-  let configured = false;
-  let source = 'nenhuma';
   try {
-    if (dbConfigured()) {
-      const { pix } = await getSettings();
-      if (pix.provider) {
-        provider = pix.provider;
-        configured = !!pix.token;
-        source = 'painel';
-      }
-    }
-    if (!provider && process.env.PIX_PROVIDER) {
-      provider = process.env.PIX_PROVIDER;
-      configured = !!process.env.PIX_TOKEN;
-      source = 'env';
-    }
+    const cfg = await loadConfig();
+    return json(
+      { ok: true, route: 'alive', provider: cfg.provider || '(nenhum)', configured: !!(cfg.provider && cfg.token) },
+      200,
+      origin,
+    );
   } catch (e) {
     return json({ ok: false, error: `Falha ao ler config: ${(e as Error).message}` }, 200, origin);
   }
-  return json({ ok: true, route: 'alive', provider, configured, source }, 200, origin);
 }
 
 export async function POST(req: Request): Promise<Response> {
