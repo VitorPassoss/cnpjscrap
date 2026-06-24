@@ -16,12 +16,29 @@ export function notFoundResponse(): Response {
   return new Response(NOT_FOUND, { status: 404, headers: HTML_HEADERS });
 }
 
-/** HTML do template ativo da biblioteca (cai no primeiro template se não houver ativo). */
-export async function activeTemplateHtml(): Promise<string> {
+/** Redireciona (302) o lead pra URL de destino do template tipo 'url'. */
+export function redirectResponse(url: string): Response {
+  return new Response(null, { status: 302, headers: { location: url } });
+}
+
+export interface ActiveTemplate {
+  kind: 'html' | 'url';
+  html: string;
+  url: string;
+  params: string[];
+}
+
+/** Template ativo da biblioteca como objeto (cai no primeiro se não houver ativo). */
+export async function activeTemplate(): Promise<ActiveTemplate | null> {
   const s = await getSettings();
-  return (
-    s.templates?.find((t) => t.id === s.activeTemplateId)?.html ?? s.templates?.[0]?.html ?? ''
-  );
+  const t = s.templates?.find((x) => x.id === s.activeTemplateId) ?? s.templates?.[0];
+  if (!t) return null;
+  return {
+    kind: t.kind === 'url' ? 'url' : 'html',
+    html: t.html ?? '',
+    url: t.url ?? '',
+    params: Array.isArray(t.params) ? t.params : [],
+  };
 }
 
 /** Aplica as variáveis, compila o CSS (cacheado) e devolve a página HTML pronta. */

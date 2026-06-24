@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { decodeLeadLink, renderTemplate } from '@/lib/leadLink';
+import { buildRedirectUrl, decodeLeadLink, renderTemplate } from '@/lib/leadLink';
 
 function LeadView() {
   const params = useSearchParams();
@@ -16,6 +16,11 @@ function LeadView() {
   // /cnpj/<cnpj>, que monta o template consultando o lead na hora.
   useEffect(() => {
     const payload = d ? decodeLeadLink(d) : null;
+    // Template tipo URL → redireciona pra página externa com os dados na query.
+    if (payload && payload.k === 'url' && typeof payload.u === 'string') {
+      window.location.replace(buildRedirectUrl(payload.u, payload.v, payload.p));
+      return;
+    }
     if (!payload || typeof payload.t !== 'string') {
       if (cnpj.length === 14) {
         window.location.replace(`/cnpj/${cnpj}`);

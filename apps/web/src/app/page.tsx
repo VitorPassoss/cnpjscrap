@@ -121,8 +121,10 @@ export default function Painel() {
     { id: 'padrao', name: 'Padrão', html: DEFAULT_TEMPLATE },
   ]);
   const [activeId, setActiveId] = useState('padrao');
-  const activeHtml = useMemo(
-    () => templates.find((t) => t.id === activeId)?.html ?? DEFAULT_TEMPLATE,
+  const activeTpl = useMemo(
+    () =>
+      templates.find((t) => t.id === activeId) ??
+      templates[0] ?? { id: 'padrao', name: 'Padrão', html: DEFAULT_TEMPLATE },
     [templates, activeId],
   );
   const [tplStatus, setTplStatus] = useState<'' | 'salvando' | 'salvo' | 'erro'>('');
@@ -255,7 +257,14 @@ export default function Painel() {
         const res = await fetch('/api/links', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vars: leadVars(l), template: activeHtml, templateId: activeId }),
+          body: JSON.stringify({
+            vars: leadVars(l),
+            template: activeTpl.html ?? '',
+            templateId: activeId,
+            kind: activeTpl.kind ?? 'html',
+            url: activeTpl.url ?? '',
+            params: activeTpl.params ?? [],
+          }),
         });
         const data = await res.json();
         if (res.ok && data.code) {
@@ -266,9 +275,9 @@ export default function Painel() {
       } catch {
         // sem banco → link longo autossuficiente
       }
-      return leadLinkUrl(window.location.origin, leadVars(l), activeHtml);
+      return leadLinkUrl(window.location.origin, leadVars(l), activeTpl);
     },
-    [activeHtml, activeId, links],
+    [activeTpl, activeId, links],
   );
 
   // Gera (em lote) o link curto dos leads-alvo e devolve o mapa cnpj → url.
@@ -282,8 +291,11 @@ export default function Painel() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             batch: alvo.map((l) => ({ cnpj: l.cnpj, vars: leadVars(l) })),
-            template: activeHtml,
+            template: activeTpl.html ?? '',
             templateId: activeId,
+            kind: activeTpl.kind ?? 'html',
+            url: activeTpl.url ?? '',
+            params: activeTpl.params ?? [],
           }),
         });
         const data = await res.json();
@@ -294,12 +306,12 @@ export default function Painel() {
       const novos: Record<string, string> = {};
       for (const l of alvo) {
         const code = codes[l.cnpj];
-        novos[l.cnpj] = code ? `${origin}/l/${code}?cnpj=${l.cnpj}` : leadLinkUrl(origin, leadVars(l), activeHtml);
+        novos[l.cnpj] = code ? `${origin}/l/${code}?cnpj=${l.cnpj}` : leadLinkUrl(origin, leadVars(l), activeTpl);
       }
       setLinks((m) => ({ ...m, ...novos }));
       return novos;
     },
-    [activeHtml, activeId],
+    [activeTpl, activeId],
   );
 
   // Leads exibidos/disparados: oculta os já vistos quando o filtro está ligado.

@@ -1,7 +1,7 @@
 import { resolveApiKey } from '@/lib/resolveKey';
 import { lookupLead } from '@/lib/lookupLead';
-import { leadVars } from '@/lib/leadLink';
-import { activeTemplateHtml, notFoundResponse, renderLeadResponse } from '@/lib/liveLead';
+import { leadVars, templateRedirectUrl } from '@/lib/leadLink';
+import { activeTemplate, notFoundResponse, redirectResponse, renderLeadResponse } from '@/lib/liveLead';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,13 +20,19 @@ export async function GET(req: Request, ctx: { params: Promise<{ cnpj: string }>
   const lead = await lookupLead(key, digits, req.signal);
   if (!lead) return notFoundResponse();
 
-  let template = '';
+  let tpl = null;
   try {
-    template = await activeTemplateHtml();
+    tpl = await activeTemplate();
   } catch {
-    template = '';
+    tpl = null;
   }
-  if (!template) return notFoundResponse();
+  if (!tpl) return notFoundResponse();
 
-  return renderLeadResponse(template, leadVars(lead));
+  const vars = leadVars(lead);
+  // Template tipo 'url' → redireciona o lead pra página externa com os dados na query.
+  const redir = templateRedirectUrl(tpl, vars);
+  if (redir) return redirectResponse(redir);
+
+  if (!tpl.html) return notFoundResponse();
+  return renderLeadResponse(tpl.html, vars);
 }

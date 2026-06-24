@@ -12,6 +12,11 @@ export interface TemplateItem {
   id: string;
   name: string;
   html: string;
+  /** 'html' (padrão) renderiza o HTML; 'url' redireciona o lead pra `url`. */
+  kind?: 'html' | 'url';
+  url?: string;
+  /** Variáveis enviadas na query string quando kind === 'url' (vazio = só cnpj). */
+  params?: string[];
 }
 
 /** Config do gateway Pix (salva no painel; token é segredo, não volta pro front). */

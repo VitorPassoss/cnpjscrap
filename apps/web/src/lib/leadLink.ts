@@ -13,14 +13,30 @@ export interface LeadLinkPayload {
   v: Record<string, string>; // variáveis do lead
   t?: string; // snapshot do template HTML (fallback / links antigos)
   ti?: string; // id do template na biblioteca → resolvido dinâmico no /l/<code>
+  k?: 'url'; // kind do template: 'url' = redireciona (senão renderiza `t`)
+  u?: string; // destino do redirect quando k === 'url' (snapshot)
+  p?: string[]; // variáveis que entram na query string (vazio/ausente = só cnpj)
 }
 
-/** Template nomeado da biblioteca (até 3); um deles fica marcado como ativo. */
+/**
+ * Template nomeado da biblioteca (até 3); um deles fica marcado como ativo.
+ *
+ * `kind === 'html'` (padrão): renderiza o `html` trocando os {{placeholders}}.
+ * `kind === 'url'`: ignora o HTML e redireciona o lead pra `url`, levando todas
+ * as variáveis do lead na query string (ex.: ?nomeFantasia=…&cnpj=…).
+ */
 export interface Template {
   id: string;
   name: string;
   html: string;
+  kind?: 'html' | 'url';
+  url?: string;
+  /** Quais variáveis do lead vão na query string (só vale p/ kind 'url'). Vazio = só `cnpj`. */
+  params?: string[];
 }
+
+/** Padrão de variáveis enviadas no redirect quando nada é marcado. */
+export const DEFAULT_URL_PARAMS = ['cnpj'];
 
 // ───────────────────────── variáveis disponíveis ─────────────────────────
 
@@ -212,26 +228,74 @@ function fromBase64Url(s: string): Uint8Array {
   return bytes;
 }
 
-export function encodeLeadLink(vars: Record<string, string>, template: string): string {
-  const json = JSON.stringify({ v: vars, t: template } satisfies LeadLinkPayload);
-  return toBase64Url(new TextEncoder().encode(json));
+export function encodeLeadLink(vars: Record<string, string>, template: Template): string {
+  const payload: LeadLinkPayload = { v: vars };
+  if (template.kind === 'url' && template.url) {
+    payload.k = 'url';
+    payload.u = template.url;
+    payload.p = urlParamKeys(template.params);
+  } else {
+    payload.t = template.html ?? '';
+  }
+  return toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
 }
 
 export function decodeLeadLink(d: string): LeadLinkPayload | null {
   try {
     const json = new TextDecoder().decode(fromBase64Url(d));
     const obj = JSON.parse(json) as LeadLinkPayload;
-    if (!obj || typeof obj.t !== 'string' || typeof obj.v !== 'object') return null;
-    return obj;
+    if (!obj || typeof obj.v !== 'object') return null;
+    // url-kind: precisa do destino; html-kind: precisa do snapshot `t`.
+    if (obj.k === 'url') return typeof obj.u === 'string' ? obj : null;
+    return typeof obj.t === 'string' ? obj : null;
   } catch {
     return null;
   }
 }
 
 /** Monta a URL pública completa para um lead (com o CNPJ visível na URL). */
-export function leadLinkUrl(origin: string, vars: Record<string, string>, template: string): string {
+export function leadLinkUrl(origin: string, vars: Record<string, string>, template: Template): string {
   const cnpj = vars.cnpj ? `&cnpj=${encodeURIComponent(vars.cnpj)}` : '';
   return `${origin}/lead?d=${encodeLeadLink(vars, template)}${cnpj}`;
+}
+
+// ───────────────────────── redirect (template tipo URL) ─────────────────────────
+
+/** Lista de variáveis a enviar na query: vazio/ausente cai no padrão (só cnpj). */
+export function urlParamKeys(params?: string[]): string[] {
+  const keys = (params ?? []).filter((k) => typeof k === 'string' && k);
+  return keys.length ? keys : DEFAULT_URL_PARAMS;
+}
+
+/**
+ * Monta a URL de destino acrescentando as variáveis do lead na query string.
+ * `keys` limita quais variáveis vão (ex.: ['cnpj'] = só o CNPJ). Preserva os
+ * parâmetros que o usuário já tiver colocado na URL base.
+ */
+export function buildRedirectUrl(base: string, vars: Record<string, string>, keys?: string[]): string {
+  let raw = (base ?? '').trim();
+  if (!raw) return raw;
+  if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return raw;
+  }
+  for (const k of urlParamKeys(keys)) {
+    const val = vars[k];
+    if (val !== undefined && val !== null && val !== '') u.searchParams.set(k, val);
+  }
+  return u.toString();
+}
+
+/** Devolve a URL de redirect se o template for do tipo 'url' (senão null). */
+export function templateRedirectUrl(
+  tpl: { kind?: string; url?: string; params?: string[] } | null | undefined,
+  vars: Record<string, string>,
+): string | null {
+  if (tpl && tpl.kind === 'url' && tpl.url) return buildRedirectUrl(tpl.url, vars, tpl.params);
+  return null;
 }
 
 // ───────────────────────── disparo em massa ─────────────────────────

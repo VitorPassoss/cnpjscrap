@@ -1,8 +1,15 @@
 import { dbConfigured, getLeadLink, getSettings } from '@/lib/db';
-import { type LeadLinkPayload, leadVars } from '@/lib/leadLink';
+import { type LeadLinkPayload, leadVars, templateRedirectUrl } from '@/lib/leadLink';
 import { lookupLead } from '@/lib/lookupLead';
 import { resolveApiKey } from '@/lib/resolveKey';
-import { activeTemplateHtml, notFoundResponse, renderLeadResponse } from '@/lib/liveLead';
+import { activeTemplate, notFoundResponse, redirectResponse, renderLeadResponse } from '@/lib/liveLead';
+
+interface ResolvedTpl {
+  kind: 'html' | 'url';
+  html: string;
+  url: string;
+  params: string[];
+}
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,24 +33,49 @@ export async function GET(req: Request, ctx: { params: Promise<{ code: string }>
     return liveFromCnpj(req, cnpjUrl);
   }
 
-  // Template "vivo": se o link guarda o id (ti), busca o HTML atual da biblioteca
-  // — assim editar o template no painel reflete em todos os links dele na hora.
-  // Cai no snapshot `t` se o template foi apagado, e por fim no template ativo.
-  let template = typeof payload.t === 'string' ? payload.t : '';
+  // Template "vivo": se o link guarda o id (ti), busca o template atual da
+  // biblioteca — assim editar o template no painel reflete em todos os links
+  // dele na hora. Cai no snapshot do link se o template foi apagado, e por fim
+  // no template ativo.
+  let tpl: ResolvedTpl = {
+    kind: payload.k === 'url' ? 'url' : 'html',
+    html: typeof payload.t === 'string' ? payload.t : '',
+    url: typeof payload.u === 'string' ? payload.u : '',
+    params: Array.isArray(payload.p) ? payload.p : [],
+  };
   if (payload.ti) {
     try {
       const s = await getSettings();
-      const atual = s.templates?.find((t) => t.id === payload.ti)?.html;
-      if (atual) template = atual;
-      else if (!template) template = s.templates?.find((t) => t.id === s.activeTemplateId)?.html ?? '';
+      const atual = s.templates?.find((t) => t.id === payload.ti);
+      if (atual) {
+        tpl = {
+          kind: atual.kind === 'url' ? 'url' : 'html',
+          html: atual.html ?? '',
+          url: atual.url ?? '',
+          params: Array.isArray(atual.params) ? atual.params : [],
+        };
+      } else if (!tpl.html && !tpl.url) {
+        const ativo = s.templates?.find((t) => t.id === s.activeTemplateId);
+        if (ativo) {
+          tpl = {
+            kind: ativo.kind === 'url' ? 'url' : 'html',
+            html: ativo.html ?? '',
+            url: ativo.url ?? '',
+            params: Array.isArray(ativo.params) ? ativo.params : [],
+          };
+        }
+      }
     } catch {
-      // banco indisponível → mantém o snapshot `t`
+      // banco indisponível → mantém o snapshot do link
     }
   }
 
-  if (!template) return liveFromCnpj(req, cnpjUrl);
+  const vars = payload.v as Record<string, string>;
+  const redir = templateRedirectUrl(tpl, vars);
+  if (redir) return redirectResponse(redir);
 
-  return renderLeadResponse(template, payload.v as Record<string, string>);
+  if (!tpl.html) return liveFromCnpj(req, cnpjUrl);
+  return renderLeadResponse(tpl.html, vars);
 }
 
 /** Monta a página consultando o CNPJ ao vivo + template ativo. */
@@ -52,12 +84,16 @@ async function liveFromCnpj(req: Request, cnpj: string): Promise<Response> {
   const key = await resolveApiKey(req);
   const lead = await lookupLead(key, cnpj, req.signal);
   if (!lead) return notFoundResponse();
-  let template = '';
+  let tpl = null;
   try {
-    template = await activeTemplateHtml();
+    tpl = await activeTemplate();
   } catch {
-    template = '';
+    tpl = null;
   }
-  if (!template) return notFoundResponse();
-  return renderLeadResponse(template, leadVars(lead));
+  if (!tpl) return notFoundResponse();
+  const vars = leadVars(lead);
+  const redir = templateRedirectUrl(tpl, vars);
+  if (redir) return redirectResponse(redir);
+  if (!tpl.html) return notFoundResponse();
+  return renderLeadResponse(tpl.html, vars);
 }

@@ -82,7 +82,17 @@ export async function POST(req: Request) {
           typeof (t as TemplateItem).html === 'string',
       )
       .slice(0, 3) // até 3 templates na biblioteca
-      .map((t) => ({ id: t.id, name: t.name, html: t.html }));
+      .map((t) => {
+        const item: TemplateItem = { id: t.id, name: t.name, html: t.html };
+        if (t.kind === 'url') {
+          item.kind = 'url';
+          item.url = typeof t.url === 'string' ? t.url.trim() : '';
+          item.params = Array.isArray(t.params)
+            ? t.params.filter((p): p is string => typeof p === 'string' && !!p)
+            : [];
+        }
+        return item;
+      });
   }
   if (typeof body.activeTemplateId === 'string') patch.activeTemplateId = body.activeTemplateId;
 
